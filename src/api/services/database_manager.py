@@ -123,7 +123,7 @@ class DatabaseManager:
                 host=config.postgres.host,
                 port=config.postgres.port,
                 database=config.postgres.database,
-                username=config.postgres.username,
+                user=config.postgres.user,
                 password=config.postgres.password
             )
             

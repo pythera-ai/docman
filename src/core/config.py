@@ -2,6 +2,9 @@
 import os
 from pydantic_settings import BaseSettings
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class DatabaseConfig(BaseSettings):
     """Base database configuration"""
@@ -14,8 +17,8 @@ class DatabaseConfig(BaseSettings):
 
 class QdrantConfig(DatabaseConfig):
     """Qdrant vector database configuration"""
-    url: Optional[str] = None
-    api_key: Optional[str] = None
+    url: Optional[str] = os.getenv("QDRANT_URL", "localhost:6333")
+    api_key: Optional[str] = os.getenv("QDRANT_API_KEY", None)
     
     # Collection settings aligned with our implementation
     default_collection_name: str = "document_chunks"
@@ -31,11 +34,11 @@ class QdrantConfig(DatabaseConfig):
 
 class MinIOConfig(DatabaseConfig):
     """MinIO object storage configuration"""
-    endpoint: Optional[str] = None
-    access_key: Optional[str] = None
-    secret_key: Optional[str] = None
-    secure: bool = True
-    
+    endpoint: Optional[str] = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+    access_key: Optional[str] = os.getenv("MINIO_ACCESS_KEY", None)
+    secret_key: Optional[str] = os.getenv("MINIO_SECRET_KEY", None)
+    secure: bool = os.getenv("MINIO_SECURE", "false").lower() == "true"
+
     # Storage settings
     default_bucket: str = "documents"
     base_url: str = "https://minio/bucket"
@@ -47,12 +50,12 @@ class MinIOConfig(DatabaseConfig):
 
 class PostgresConfig(DatabaseConfig):
     """PostgreSQL database configuration"""
-    host: Optional[str] = None
-    port: int = 5432
-    database: Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    
+    host: Optional[str] = os.getenv("POSTGRES_HOST", "localhost")
+    port: int = int(os.getenv("POSTGRES_PORT", 5432))
+    database: Optional[str] = os.getenv("POSTGRES_DATABASE", "docman")
+    user: Optional[str] = os.getenv("POSTGRES_USERNAME", "postgres")
+    password: Optional[str] = os.getenv("POSTGRES_PASSWORD", "postgres")
+
     # Connection settings
     min_connections: int = 1
     max_connections: int = 20
