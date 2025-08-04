@@ -36,6 +36,18 @@ class DocumentRecord:
     metadata: Optional[Dict] = None
 
 
+@dataclass
+class SessionRecord:
+    """Session record structure matching the sessions table schema"""
+    session_id: str
+    user_id: str
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    status: str = 'active'
+    metadata: Optional[Dict] = None
+    temp_collection_name: Optional[str] = None
+
+
 class PostgresDB(InterfaceDatabase):
     """
     PostgreSQL database implementation for storing document metadata.
@@ -735,6 +747,555 @@ class PostgresDB(InterfaceDatabase):
             order_by='created_at',
             order_dir='desc'
         )
+    
+    # =============================================
+    # SESSION MANAGEMENT METHODS
+    # =============================================
+    
+    def create_session(self, user_id: str, expires_at: datetime, 
+                      metadata: Optional[Dict] = None, 
+                      temp_collection_name: Optional[str] = None) -> Dict:
+        """
+        Create a new session for a user.
+        
+        Args:
+            user_id: User ID for the session
+            expires_at: When the session expires
+            metadata: Optional session metadata
+            temp_collection_name: Optional temporary collection name
+            
+        Returns:
+            Dict with session information or error
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'session': None,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Insert new session
+                insert_query = """
+                    INSERT INTO sessions (
+                        user_id, expires_at, metadata, temp_collection_name
+                    ) VALUES (
+                        %s, %s, %s, %s
+                    ) RETURNING *
+                """
+                
+                cursor.execute(insert_query, (
+                    user_id,
+                    expires_at,
+                    Json(metadata) if metadata and Json else json.dumps(metadata) if metadata else None,
+                    temp_collection_name
+                ))
+                
+                record = cursor.fetchone()
+                self._connection.commit()
+                
+                processing_time = int((time.time() - start_time) * 1000)
+                
+                return {
+                    'session': {
+                        'session_id': str(record['session_id']),
+                        'user_id': str(record['user_id']),
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'expires_at': record['expires_at'].isoformat() if record['expires_at'] else None,
+                        'status': record['status'],
+                        'metadata': record['metadata'] or {},
+                        'temp_collection_name': record['temp_collection_name']
+                    },
+                    'processing_time_ms': processing_time
+                }
+                
+        except Exception as e:
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'session': None,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Error creating session: {str(e)}'
+            }
+    
+    def get_session(self, session_id: str) -> Optional[Dict]:
+        """
+        Get session information by session ID.
+        
+        Args:
+            session_id: Session ID to retrieve
+            
+        Returns:
+            Session dictionary or None if not found
+        """
+        if not self._check_connection():
+            return None
+        
+        try:
+            if not self._connection:
+                return None
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                cursor.execute(
+                    """
+                    SELECT session_id, user_id, created_at, expires_at, 
+                           status, metadata, temp_collection_name
+                    FROM sessions
+                    WHERE session_id = %s
+                    """,
+                    (session_id,)
+                )
+                
+                record = cursor.fetchone()
+                if record:
+                    return {
+                        'session_id': str(record['session_id']),
+                        'user_id': str(record['user_id']),
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'expires_at': record['expires_at'].isoformat() if record['expires_at'] else None,
+                        'status': record['status'],
+                        'metadata': record['metadata'] or {},
+                        'temp_collection_name': record['temp_collection_name']
+                    }
+                return None
+                
+        except Exception as e:
+            logging.error(f"Error getting session {session_id}: {e}")
+            return None
+    
+    def get_user_sessions(self, user_id: str, status: Optional[str] = None, 
+                         limit: int = 100, offset: int = 0) -> Dict:
+        """
+        Get sessions for a specific user.
+        
+        Args:
+            user_id: User ID to get sessions for
+            status: Optional status filter (active, expired, closed)
+            limit: Maximum number of results
+            offset: Number of results to skip
+            
+        Returns:
+            Dictionary with sessions and pagination info
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'sessions': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        sessions = []
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Build WHERE conditions
+                where_conditions = ["user_id = %s"]
+                query_params: List[Any] = [user_id]
+                
+                if status:
+                    where_conditions.append("status = %s")
+                    query_params.append(status)
+                
+                where_clause = "WHERE " + " AND ".join(where_conditions)
+                
+                # Build the query
+                query = f"""
+                    SELECT session_id, user_id, created_at, expires_at,
+                           status, metadata, temp_collection_name
+                    FROM sessions
+                    {where_clause}
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                """
+                
+                query_params.extend([limit, offset])
+                
+                # Execute query
+                cursor.execute(query, query_params)
+                records = cursor.fetchall()
+                
+                # Format results
+                for record in records:
+                    sessions.append({
+                        'session_id': str(record['session_id']),
+                        'user_id': str(record['user_id']),
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'expires_at': record['expires_at'].isoformat() if record['expires_at'] else None,
+                        'status': record['status'],
+                        'metadata': record['metadata'] or {},
+                        'temp_collection_name': record['temp_collection_name']
+                    })
+                
+                # Get total count for pagination
+                count_query = f"""
+                    SELECT COUNT(*) as total
+                    FROM sessions
+                    {where_clause}
+                """
+                
+                cursor.execute(count_query, query_params[:-2])  # Exclude LIMIT and OFFSET
+                total_count = cursor.fetchone()['total']
+                
+        except Exception as e:
+            logging.error(f"Error getting user sessions: {e}")
+            return {
+                'sessions': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': str(e)
+            }
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        return {
+            'sessions': sessions,
+            'total_found': total_count,
+            'returned_count': len(sessions),
+            'limit': limit,
+            'offset': offset,
+            'processing_time_ms': processing_time
+        }
+    
+    def update_session(self, session_id: str, status: Optional[str] = None,
+                      metadata: Optional[Dict] = None,
+                      temp_collection_name: Optional[str] = None,
+                      expires_at: Optional[datetime] = None) -> Dict:
+        """
+        Update session information.
+        
+        Args:
+            session_id: Session ID to update
+            status: New status (optional)
+            metadata: Metadata to merge (optional)
+            temp_collection_name: New temp collection name (optional)
+            expires_at: New expiration time (optional)
+            
+        Returns:
+            Dict with update results
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'session': None,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Build dynamic update query
+                update_fields = []
+                update_values = []
+                
+                if status is not None:
+                    update_fields.append('status = %s')
+                    update_values.append(status)
+                
+                if temp_collection_name is not None:
+                    update_fields.append('temp_collection_name = %s')
+                    update_values.append(temp_collection_name)
+                
+                if expires_at is not None:
+                    update_fields.append('expires_at = %s')
+                    update_values.append(expires_at)
+                
+                if metadata is not None:
+                    # Get existing metadata first
+                    cursor.execute(
+                        "SELECT metadata FROM sessions WHERE session_id = %s",
+                        (session_id,)
+                    )
+                    result = cursor.fetchone()
+                    if result:
+                        existing_metadata = result['metadata'] or {}
+                        # Merge metadata
+                        merged_metadata = {**existing_metadata, **metadata}
+                        update_fields.append('metadata = %s')
+                        update_values.append(Json(merged_metadata) if Json else json.dumps(merged_metadata))
+                
+                if not update_fields:
+                    return {
+                        'session': None,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'error': 'No fields to update'
+                    }
+                
+                # Add session_id for WHERE clause
+                update_values.append(session_id)
+                
+                # Execute update
+                update_query = f"""
+                    UPDATE sessions 
+                    SET {', '.join(update_fields)}
+                    WHERE session_id = %s
+                    RETURNING *
+                """
+                
+                cursor.execute(update_query, update_values)
+                record = cursor.fetchone()
+                
+                if record:
+                    self._connection.commit()
+                    processing_time = int((time.time() - start_time) * 1000)
+                    
+                    return {
+                        'session': {
+                            'session_id': str(record['session_id']),
+                            'user_id': str(record['user_id']),
+                            'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                            'expires_at': record['expires_at'].isoformat() if record['expires_at'] else None,
+                            'status': record['status'],
+                            'metadata': record['metadata'] or {},
+                            'temp_collection_name': record['temp_collection_name']
+                        },
+                        'processing_time_ms': processing_time
+                    }
+                else:
+                    return {
+                        'session': None,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'error': 'Session not found'
+                    }
+                
+        except Exception as e:
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'session': None,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Error updating session: {str(e)}'
+            }
+    
+    def delete_session(self, session_id: str) -> Dict:
+        """
+        Delete a session.
+        
+        Args:
+            session_id: Session ID to delete
+            
+        Returns:
+            Dict with deletion results
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'deleted': False,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Get session info before deletion
+                cursor.execute(
+                    "SELECT session_id, user_id FROM sessions WHERE session_id = %s",
+                    (session_id,)
+                )
+                record = cursor.fetchone()
+                
+                if not record:
+                    return {
+                        'deleted': False,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'error': 'Session not found'
+                    }
+                
+                # Delete the session
+                cursor.execute(
+                    "DELETE FROM sessions WHERE session_id = %s",
+                    (session_id,)
+                )
+                
+                if cursor.rowcount > 0:
+                    self._connection.commit()
+                    processing_time = int((time.time() - start_time) * 1000)
+                    
+                    return {
+                        'deleted': True,
+                        'session_id': session_id,
+                        'user_id': str(record['user_id']),
+                        'processing_time_ms': processing_time
+                    }
+                else:
+                    return {
+                        'deleted': False,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'error': 'Failed to delete session'
+                    }
+                
+        except Exception as e:
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'deleted': False,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Error deleting session: {str(e)}'
+            }
+    
+    def expire_old_sessions(self) -> Dict:
+        """
+        Mark expired sessions as 'expired' based on expires_at timestamp.
+        
+        Returns:
+            Dict with expiration results
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'expired_count': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor() as cursor:
+                # Update expired sessions
+                cursor.execute(
+                    """
+                    UPDATE sessions 
+                    SET status = 'expired'
+                    WHERE expires_at < CURRENT_TIMESTAMP 
+                    AND status = 'active'
+                    """
+                )
+                
+                expired_count = cursor.rowcount
+                self._connection.commit()
+                
+                processing_time = int((time.time() - start_time) * 1000)
+                
+                return {
+                    'expired_count': expired_count,
+                    'processing_time_ms': processing_time
+                }
+                
+        except Exception as e:
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'expired_count': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Error expiring sessions: {str(e)}'
+            }
+    
+    def get_session_documents(self, session_id: str, limit: int = 100, offset: int = 0) -> Dict:
+        """
+        Get all documents for a specific session by looking in metadata.
+        
+        Args:
+            session_id: Session ID to get documents for
+            limit: Maximum number of results
+            offset: Number of results to skip
+            
+        Returns:
+            Dictionary with documents and pagination info
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'documents': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        documents = []
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Search for documents where metadata contains the session_id
+                query = """
+                    SELECT document_id, user_id, filename, file_type, file_size,
+                           minio_path, processing_status, chunks_count,
+                           created_at, updated_at, metadata
+                    FROM documents
+                    WHERE metadata->>'session_id' = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                """
+                
+                cursor.execute(query, (session_id, limit, offset))
+                records = cursor.fetchall()
+                
+                # Format results
+                for record in records:
+                    documents.append({
+                        'document_id': str(record['document_id']),
+                        'user_id': str(record['user_id']),
+                        'filename': record['filename'],
+                        'file_type': record['file_type'],
+                        'file_size': record['file_size'],
+                        'chunks_count': record['chunks_count'],
+                        'processing_status': record['processing_status'],
+                        'file_url': record['minio_path'],
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'updated_at': record['updated_at'].isoformat() if record['updated_at'] else None,
+                        'metadata': record['metadata'] or {}
+                    })
+                
+                # Get total count for pagination
+                count_query = """
+                    SELECT COUNT(*) as total
+                    FROM documents
+                    WHERE metadata->>'session_id' = %s
+                """
+                
+                cursor.execute(count_query, (session_id,))
+                total_count = cursor.fetchone()['total']
+                
+        except Exception as e:
+            logging.error(f"Error getting session documents: {e}")
+            return {
+                'documents': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': str(e)
+            }
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        return {
+            'documents': documents,
+            'total_found': total_count,
+            'returned_count': len(documents),
+            'limit': limit,
+            'offset': offset,
+            'processing_time_ms': processing_time
+        }
     
     def close(self):
         """Close database connection"""
