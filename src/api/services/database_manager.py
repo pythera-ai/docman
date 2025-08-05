@@ -725,3 +725,48 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to get session documents for {session_id}: {e}")
             raise DatabaseConnectionException("PostgreSQL", {"operation": "get_session_documents", "error": str(e)})
+
+    async def download_document(self, document_id: str) -> Dict[str, Any]:
+        """Download document content from MinIO"""
+        if not self._initialized:
+            raise DatabaseConnectionException("system", {"reason": "not_initialized"})
+        
+        try:
+            if not self.minio_client:
+                raise DatabaseConnectionException("MinIO", {"reason": "client_not_initialized"})
+            
+            # Get document content from MinIO
+            file_content = self.minio_client.get_file(
+                document_id=document_id,
+                bucket_name=config.minio.default_bucket
+            )
+            
+            if file_content is None:
+                return {
+                    "error": "Document not found",
+                    "document_id": document_id
+                }
+            
+            # Get document metadata from MinIO
+            document_info = self.minio_client.get_document_info(
+                document_id=document_id,
+                bucket_name=config.minio.default_bucket
+            )
+            
+            if document_info is None:
+                return {
+                    "error": "Document metadata not found",
+                    "document_id": document_id
+                }
+            
+            return {
+                "file_content": file_content,
+                "filename": document_info.get("filename", "unknown"),
+                "content_type": document_info.get("content_type", "application/octet-stream"),
+                "file_size": document_info.get("file_size", len(file_content)),
+                "document_id": document_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Document download failed for {document_id}: {e}")
+            raise DatabaseConnectionException("MinIO", {"operation": "download_document", "error": str(e)})

@@ -117,10 +117,64 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to upload document: {str(e)}"
+            detail=f"Failed to get document info: {str(e)}"
         )
 
 
+@router.post("/validate-upload")
+async def validate_file_upload(
+    files: List[UploadFile] = File(...),
+    max_files: int = Query(10, ge=1, le=50, description="Maximum number of files to validate"),
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> Dict[str, Any]:
+    """
+    FR002: Document Upload and Processing - Validate file upload before actual upload.
+    
+    Args:
+        files: List of files to validate
+        max_files: Maximum number of files allowed
+        db_manager: Database manager instance
+        
+    Returns:
+        Dict: Validation results
+        
+    Raises:
+        HTTPException: If validation service fails
+    """
+    try:
+        if not db_manager.minio_client:
+            raise HTTPException(
+                status_code=503,
+                detail="MinIO client not available"
+            )
+        
+        # Prepare files data for validation
+        files_data = []
+        for file in files:
+            content = await file.read()
+            await file.seek(0)  # Reset file pointer
+            
+            files_data.append({
+                "filename": file.filename,
+                "file_size": len(content),
+                "file_data": content,
+                "content_type": file.content_type
+            })
+        
+        # Use MinIO validation functionality
+        validation_result = db_manager.minio_client.validate_file_request(
+            files_data=files_data,
+            max_files=max_files
+        )
+        
+        return validation_result
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to validate files: {str(e)}"
+        )
+    
 @router.get("/sessions/{session_id}/documents")
 async def get_session_documents(
     session_id: str,
@@ -188,12 +242,40 @@ async def download_document(
         HTTPException: If document not found or download fails
     """
     try:
-        # This is a placeholder implementation
-        # In practice, you'd retrieve the document from MinIO and stream it back
+        # Download document from MinIO
+        result = await db_manager.download_document(document_id=document_id)
         
-        raise HTTPException(
-            status_code=501,
-            detail="Document download not yet implemented"
+        if result.get("error"):
+            if "not found" in result["error"].lower():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document not found: {document_id}"
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to download document: {result['error']}"
+                )
+        
+        # Create streaming response
+        file_content = result["file_content"]
+        filename = result["filename"]
+        content_type = result["content_type"]
+        
+        # Create BytesIO stream
+        from io import BytesIO
+        file_stream = BytesIO(file_content)
+        
+        # Return streaming response with proper headers
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(file_content))
+        }
+        
+        return StreamingResponse(
+            file_stream,
+            media_type=content_type,
+            headers=headers
         )
         
     except DatabaseConnectionException as e:
@@ -291,6 +373,192 @@ async def update_document_metadata(
         )
 
 
+@router.get("/", response_model=Dict[str, Any])
+async def list_documents(
+    filename_pattern: Optional[str] = Query(None, description="Filter by filename pattern"),
+    include_metadata: bool = Query(True, description="Include detailed metadata"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of documents to return"),
+    offset: int = Query(0, ge=0, description="Number of documents to skip"),
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> Dict[str, Any]:
+    """
+    FR006: Document Management - List all documents with filtering options.
+    
+    Args:
+        filename_pattern: Optional pattern to filter filenames
+        include_metadata: Whether to include detailed metadata
+        limit: Maximum number of documents to return
+        offset: Number of documents to skip (for pagination)
+        db_manager: Database manager instance
+        
+    Returns:
+        Dict: Documents list and pagination info
+        
+    Raises:
+        HTTPException: If retrieval fails
+    """
+    try:
+        if not db_manager.minio_client:
+            raise HTTPException(
+                status_code=503,
+                detail="MinIO client not available"
+            )
+        
+        # Use MinIO search functionality
+        search_params = {
+            "bucket_name": config.minio.default_bucket,
+            "include_metadata": include_metadata,
+            "max_results": limit + offset  # Get more to handle offset
+        }
+        
+        if filename_pattern:
+            search_params["filename_pattern"] = filename_pattern
+        
+        result = db_manager.minio_client.search(**search_params)
+        
+        if result.get("error"):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to list documents: {result['error']}"
+            )
+        
+        documents = result.get("documents", [])
+        
+        # Apply offset and limit
+        total_found = len(documents)
+        paginated_documents = documents[offset:offset + limit]
+        
+        return {
+            "documents": paginated_documents,
+            "total_found": total_found,
+            "returned_count": len(paginated_documents),
+            "offset": offset,
+            "limit": limit,
+            "processing_time_ms": result.get("processing_time_ms", 0)
+        }
+        
+    except DatabaseConnectionException as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database connection error: {e.message}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list documents: {str(e)}"
+        )
+
+
+@router.get("/check-duplicate/{file_hash}")
+async def check_duplicate_document(
+    file_hash: str,
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> Dict[str, Any]:
+    """
+    FR002: Document Upload and Processing - Check for duplicate documents by hash.
+    
+    Args:
+        file_hash: Hash of the file to check for duplicates
+        db_manager: Database manager instance
+        
+    Returns:
+        Dict: Information about duplicate document if found
+        
+    Raises:
+        HTTPException: If check fails
+    """
+    try:
+        if not db_manager.minio_client:
+            raise HTTPException(
+                status_code=503,
+                detail="MinIO client not available"
+            )
+        
+        # Check for duplicate using MinIO functionality
+        duplicate_info = db_manager.minio_client.check_duplicate(
+            file_hash=file_hash,
+            bucket_name=config.minio.default_bucket
+        )
+        
+        if duplicate_info:
+            return {
+                "duplicate_found": True,
+                "existing_document": duplicate_info,
+                "message": "Document with this hash already exists"
+            }
+        else:
+            return {
+                "duplicate_found": False,
+                "message": "No duplicate found"
+            }
+        
+    except DatabaseConnectionException as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database connection error: {e.message}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check for duplicate: {str(e)}"
+        )
+
+
+@router.get("/{document_id}/info")
+async def get_document_info(
+    document_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> Dict[str, Any]:
+    """
+    FR006: Document Management - Get detailed document information including MinIO metadata.
+    
+    Args:
+        document_id: Document identifier
+        db_manager: Database manager instance
+        
+    Returns:
+        Dict: Detailed document information
+        
+    Raises:
+        HTTPException: If document not found
+    """
+    try:
+        if not db_manager.minio_client:
+            raise HTTPException(
+                status_code=503,
+                detail="MinIO client not available"
+            )
+        
+        # Get document info from MinIO
+        document_info = db_manager.minio_client.get_document_info(
+            document_id=document_id,
+            bucket_name=config.minio.default_bucket
+        )
+        
+        if document_info is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not found: {document_id}"
+            )
+        
+        return document_info
+        
+    except DatabaseConnectionException as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database connection error: {e.message}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get document info: {str(e)}"
+        )
+    
+
 @router.get("/{document_id}/metadata", response_model=DocumentMetadata)
 async def get_document_metadata(
     document_id: str,
@@ -310,13 +578,44 @@ async def get_document_metadata(
         HTTPException: If document not found
     """
     try:
-        # This is a placeholder implementation
-        # In practice, you'd retrieve metadata from the database
+        # Get metadata from PostgreSQL first (authoritative source)
+        metadata = await db_manager.get_document_metadata(document_id=document_id)
         
-        raise HTTPException(
-            status_code=501,
-            detail="Get document metadata not yet implemented"
-        )
+        if metadata is None:
+            # Try getting from MinIO as fallback
+            if not db_manager.minio_client:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document not found: {document_id}"
+                )
+            
+            minio_info = db_manager.minio_client.get_document_info(
+                document_id=document_id,
+                bucket_name=db_manager.minio_client._client._bucket_name if hasattr(db_manager.minio_client._client, '_bucket_name') else 'documents'
+            )
+            
+            if minio_info is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document not found: {document_id}"
+                )
+            
+            # Convert MinIO info to DocumentMetadata format
+            metadata = {
+                "document_id": document_id,
+                "filename": minio_info.get("filename", "unknown"),
+                "file_size": minio_info.get("file_size", 0),
+                "content_type": minio_info.get("content_type", "application/octet-stream"),
+                "file_hash": minio_info.get("file_hash", ""),
+                "chunks_count": 0,
+                "processing_status": minio_info.get("processing_status", "stored"),
+                "created_at": datetime.fromisoformat(minio_info["upload_time"]) if minio_info.get("upload_time") else datetime.utcnow(),
+                "updated_at": datetime.fromisoformat(minio_info["last_modified"]) if minio_info.get("last_modified") else datetime.utcnow(),
+                "metadata": minio_info.get("metadata", {})
+            }
+        
+        # Return DocumentMetadata object
+        return DocumentMetadata(**metadata)
         
     except DatabaseConnectionException as e:
         raise HTTPException(
