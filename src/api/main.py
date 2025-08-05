@@ -4,10 +4,10 @@ Document Management System API
 
 This FastAPI application provides endpoints for:
 - Document upload and processing
-- Vector search and retrieval  
 - Temporary document handling
 - Document management (CRUD)
 - Health monitoring
+#! NOT SUPPORT NOW: Vector search and retrieval  
 """
 
 from fastapi import FastAPI, Request, HTTPException
@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application
 app = FastAPI(
     title="Document Management System API",
-    description="Backend API for document upload, processing, search and management",
+    description="Backend API for document upload, processing and management",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -157,7 +157,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # Include routers
 app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
-app.include_router(search.router, prefix="/api/v1", tags=["search"])
+# app.include_router(search.router, prefix="/api/v1", tags=["search"])
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(management.router, prefix="/api/v1", tags=["management"])
 
@@ -186,7 +186,7 @@ async def api_info():
         },
         "features": {
             "document_upload": True,
-            "vector_search": True,
+            # "vector_search": True,
             "temporary_documents": True,
             "health_monitoring": True,
             "metrics_collection": True
