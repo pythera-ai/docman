@@ -223,19 +223,20 @@ class DatabaseManager:
                 if not self.postgres_client:
                     raise DatabaseConnectionException("PostgreSQL", {"reason": "client_not_initialized"})
                 
+                data = minio_result.get('documents')
                 postgres_points = [{
-                    'document_id': document_id,
+                    'document_id': e['document_id'],
                     'user_id': metadata.get('user_id', 'anonymous') if metadata else 'anonymous',
-                    'filename': filename,
-                    'file_size': len(file_data),
-                    'file_url': minio_result['documents'][0]['file_url'],
+                    'filename': e['filename'],
+                    'file_size': e['file_size'],
+                    'file_url': e['file_url'],
                     'file_type': content_type.split('/')[-1] if content_type else None,
-                    'processing_status': 'uploaded',
-                    'chunks_count': 0,
-                    'created_at': datetime.utcnow(),
-                    'updated_at': datetime.utcnow(),
+                    'processing_status': e.get('processing_status', 'uploaded'),
+                    'chunks_count': e.get('chunks_count', 0),
+                    'created_at': e.get('created_at', datetime.utcnow()),
+                    'updated_at': e.get('updated_at', datetime.utcnow()),
                     'metadata': metadata or {}
-                }]
+                } for e in data]
                 
                 postgres_result = self.postgres_client.insert(points=postgres_points)
                 
