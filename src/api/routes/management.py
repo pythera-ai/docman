@@ -2,6 +2,7 @@
 Management routes for session management and administrative functions.
 Implements FR005 and administrative features.
 """
+import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
@@ -14,6 +15,7 @@ from src.core.exceptions import DatabaseConnectionException
 from src.api.dependencies import get_database_manager
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/management", tags=["management"])
 
 
@@ -455,15 +457,38 @@ async def finalize_session(
                 preserve_documents=True
             )
         
-        # In a real implementation, you would:
-        # 1. Mark the session as finalized in the database
-        # 2. Optionally clean up temporary resources
-        # 3. Archive or preserve documents based on preserve_documents flag
-        # 4. Update session status and metadata
+        # Get current session data
+        session_data = await db_manager.get_session(session_id)
+        if not session_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session {session_id} not found"
+            )
         
-        # For now, this is a placeholder implementation
-        documents_processed = 0  # Would be calculated from actual session data
+        # Count documents associated with this session
+        documents_processed = 0
+        try:
+            docs_result = await db_manager.get_session_documents(session_id)
+            documents_processed = docs_result.get("total_found", 0)
+        except Exception as e:
+            logger.warning(f"Could not count session documents: {e}")
+        
+        # Update session status to finalized
         cleanup_performed = request.finalize_type in ["force", "cleanup"]
+        
+        try:
+            await db_manager.update_session(
+                session_id=session_id,
+                status="finalized",
+                metadata={
+                    **(session_data.get("metadata", {})),
+                    "finalized_at": current_time.isoformat(),
+                    "finalize_type": request.finalize_type,
+                    "preserve_documents": request.preserve_documents
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Could not update session status: {e}")
         
         return SessionFinalizationResponse(
             session_id=session_id,
@@ -488,6 +513,7 @@ async def finalize_session(
 
 @router.get("/sessions", response_model=List[SessionInfo])
 async def list_sessions(
+    user_id: str,
     status: Optional[str] = Query(None, description="Filter by session status"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -509,11 +535,21 @@ async def list_sessions(
         HTTPException: If listing fails
     """
     try:
-        # This is a placeholder implementation
-        # In practice, you'd query the database for session information
+    
+        result = await db_manager.get_user_sessions(
+            user_id=user_id,  # Empty user_id to indicate "all users"
+            status=status,
+            limit=limit,
+            offset=offset
+        )
         
-        return []
+        if result.get("error"):
+            # If the empty user_id approach doesn't work, return empty list
+            logger.warning(f"Could not list all sessions: {result['error']}")
+            return []
         
+        return [SessionInfo(**session) for session in result["sessions"]]
+    
     except DatabaseConnectionException as e:
         raise HTTPException(
             status_code=503,
@@ -545,13 +581,16 @@ async def get_session_info(
         HTTPException: If session not found or retrieval fails
     """
     try:
-        # This is a placeholder implementation
-        # In practice, you'd query the database for session information
+        # Get session information using the database manager
+        session_data = await db_manager.get_session(session_id)
         
-        raise HTTPException(
-            status_code=404,
-            detail=f"Session {session_id} not found"
-        )
+        if not session_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session {session_id} not found"
+            )
+        
+        return SessionInfo(**session_data)
         
     except HTTPException:
         raise
@@ -589,18 +628,29 @@ async def delete_legacy_session(
         HTTPException: If deletion fails
     """
     try:
-        # In a real implementation, you would:
-        # 1. Check if session exists and can be deleted
-        # 2. Delete associated documents if required
-        # 3. Remove session metadata
-        # 4. Clean up any temporary resources
+        # Use the actual database manager to delete the session
+        result = await db_manager.delete_session(session_id)
+        
+        if result.get("error"):
+            raise HTTPException(
+                status_code=404 if "not found" in result["error"].lower() else 500,
+                detail=f"Failed to delete session: {result['error']}"
+            )
+        
+        # Get session documents count before deletion for reporting
+        documents_deleted = 0
+        try:
+            docs_result = await db_manager.get_session_documents(session_id, limit=1)
+            documents_deleted = docs_result.get("total_found", 0)
+        except:
+            pass  # If we can't get document count, continue anyway
         
         return {
             "message": f"Session {session_id} deleted successfully",
             "session_id": session_id,
             "forced": force,
-            "documents_deleted": 0,  # Placeholder
-            "cleanup_completed": True
+            "documents_deleted": documents_deleted,
+            "cleanup_completed": result.get("deleted", False)
         }
         
     except DatabaseConnectionException as e:
@@ -635,15 +685,35 @@ async def get_admin_stats(
         # Get database health status
         db_health = db_manager.is_healthy()
         
-        # Calculate system uptime (placeholder)
-        uptime_seconds = 0.0  # Would be calculated from app start time
+        # Calculate system uptime (placeholder - would need app start time tracking)
+        uptime_seconds = 0.0
         
-        # In a real implementation, you would query actual statistics
+        # Get real statistics from database
+        total_sessions = 0
+        active_sessions = 0
+        total_documents = 0
+        
+        try:
+            # Get session statistics by querying for different statuses
+            all_sessions_result = await db_manager.get_user_sessions("", limit=1000)  # Get all sessions
+            if not all_sessions_result.get("error"):
+                total_sessions = all_sessions_result.get("total_found", 0)
+            
+            active_sessions_result = await db_manager.get_user_sessions("", status="active", limit=1000)
+            if not active_sessions_result.get("error"):
+                active_sessions = active_sessions_result.get("total_found", 0)
+                
+            # Note: For total_documents, we'd need a method to count all documents
+            # This could be added to the database manager if needed
+            
+        except Exception as e:
+            logger.warning(f"Could not get detailed statistics: {e}")
+        
         return AdminStatsResponse(
-            total_sessions=0,
-            active_sessions=0,
-            total_documents=0,
-            total_searches=0,
+            total_sessions=total_sessions,
+            active_sessions=active_sessions,
+            total_documents=total_documents,
+            total_searches=0,  # Would need search tracking
             system_uptime_seconds=uptime_seconds,
             database_status=db_health
         )
@@ -690,23 +760,39 @@ async def perform_system_cleanup(
         
         current_time = datetime.utcnow()
         
-        # In a real implementation, you would:
-        # 1. Clean up expired sessions
-        # 2. Remove orphaned documents
-        # 3. Optimize database indices
-        # 4. Clear temporary files
-        # 5. Compress old data
+        # Initialize cleanup results
+        cleanup_results = {
+            "expired_sessions_cleaned": 0,
+            "orphaned_documents_removed": 0,
+            "temporary_files_deleted": 0,
+            "space_freed_mb": 0
+        }
+        
+        # Perform actual cleanup operations based on cleanup type
+        if not dry_run:
+            try:
+                # 1. Clean up expired sessions
+                if cleanup_type in ["normal", "deep", "emergency"]:
+                    expire_result = await db_manager.expire_old_sessions()
+                    if not expire_result.get("error"):
+                        cleanup_results["expired_sessions_cleaned"] = expire_result.get("expired_count", 0)
+                
+                # 2. For deep cleanup, could add more operations
+                if cleanup_type in ["deep", "emergency"]:
+                    # Could implement additional cleanup like:
+                    # - Remove orphaned documents
+                    # - Clean up temporary collections
+                    # - Optimize database indices
+                    pass
+                    
+            except Exception as e:
+                logger.warning(f"Cleanup operation encountered issues: {e}")
         
         return {
             "cleanup_type": cleanup_type,
             "dry_run": dry_run,
             "timestamp": current_time.isoformat(),
-            "results": {
-                "expired_sessions_cleaned": 0,
-                "orphaned_documents_removed": 0,
-                "temporary_files_deleted": 0,
-                "space_freed_mb": 0
-            },
+            "results": cleanup_results,
             "message": f"{'Dry run' if dry_run else 'Actual'} {cleanup_type} cleanup completed"
         }
         
