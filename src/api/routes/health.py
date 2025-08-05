@@ -257,13 +257,22 @@ async def component_status(
         db_health = db_manager.is_healthy()
         component_healthy = db_health.get(component, False)
         
+        # Get component-specific connection details
+        connection_detail = "unknown"
+        if component == "minio":
+            connection_detail = config.minio.endpoint
+        elif component == "qdrant":
+            connection_detail = config.qdrant.url
+        elif component == "postgres":
+            connection_detail = config.postgres.host
+        
         return {
             "component": component,
             "status": "healthy" if component_healthy else "unhealthy",
             "timestamp": current_time.isoformat(),
             "connection_status": component_healthy,
             "details": {
-                "host": getattr(config, component).host if hasattr(config, component) else "unknown",
+                "connection_info": connection_detail,
                 "last_check": current_time.isoformat()
             }
         }
