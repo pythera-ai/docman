@@ -24,7 +24,8 @@ from src.api.routes import (
     documents,
     search, 
     health,
-    management
+    management,
+    chunks
 )
 from src.api.services.database_manager import DatabaseManager
 
@@ -160,6 +161,7 @@ app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
 # app.include_router(search.router, prefix="/api/v1", tags=["search"])
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(management.router, prefix="/api/v1", tags=["management"])
+app.include_router(chunks.router, prefix="/api/v1", tags=["chunks"])
 
 # Root endpoint
 @app.get("/")

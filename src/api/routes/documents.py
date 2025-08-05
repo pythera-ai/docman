@@ -4,23 +4,23 @@ Implements FR001-FR004 functional requirements.
 """
 import uuid
 import hashlib
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Body
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.core.config import config
 from src.core.models import (
-    DocumentMetadata, DocumentPayload, SearchResponse, DatabaseOperationResponse
+    DocumentMetadata, DocumentPayload, DatabaseOperationResponse
 )
 from src.api.services.database_manager import DatabaseManager
 from src.core.exceptions import DatabaseConnectionException
 from src.api.dependencies import get_database_manager
 
 
-# Additional models for API responses
+# Document upload model (keeping original)
 class Document(BaseModel):
     """Document response model"""
     document_id: str
@@ -31,18 +31,6 @@ class Document(BaseModel):
     session_id: str
     user_id: str
     status: str
-
-
-class ChunkMetadata(BaseModel):
-    """Chunk metadata response model"""
-    chunk_id: str
-    document_id: str
-    content: str
-    chunk_index: int
-    start_position: int
-    end_position: int
-    session_id: str
-
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -130,69 +118,6 @@ async def upload_document(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to upload document: {str(e)}"
-        )
-
-
-@router.post("/session/{session_id}/process", response_model=List[ChunkMetadata])
-async def process_document(
-    session_id: str,
-    document_id: str,
-    db_manager: DatabaseManager = Depends(get_database_manager)
-) -> List[ChunkMetadata]:
-    """
-    FR002: Document Upload and Processing - Process uploaded document into chunks.
-    
-    Args:
-        session_id: Session identifier
-        document_id: Document to process
-        db_manager: Database manager instance
-        
-    Returns:
-        List[ChunkMetadata]: List of processed chunks
-        
-    Raises:
-        HTTPException: If processing fails
-    """
-    try:
-        # For this implementation, we'll use a simple text splitting approach
-        # In a real system, this would involve more sophisticated processing
-        
-        # Retrieve document from MinIO
-        # This is a placeholder - in practice you'd implement document retrieval
-        # and actual text processing/chunking logic
-        
-        # Generate sample chunks for demonstration
-        chunks = []
-        chunk_count = 5  # Sample number of chunks
-        
-        for i in range(chunk_count):
-            chunk_id = str(uuid.uuid4())
-            chunk = ChunkMetadata(
-                chunk_id=chunk_id,
-                document_id=document_id,
-                content=f"Sample chunk {i+1} content from document {document_id}",
-                chunk_index=i,
-                start_position=i * 100,
-                end_position=(i + 1) * 100,
-                session_id=session_id
-            )
-            chunks.append(chunk)
-        
-        # Store chunks in vector database
-        chunk_dicts = [chunk.dict() for chunk in chunks]
-        await db_manager.store_chunks(chunks=chunk_dicts)
-        
-        return chunks
-        
-    except DatabaseConnectionException as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Database connection error: {e.message}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process document: {str(e)}"
         )
 
 

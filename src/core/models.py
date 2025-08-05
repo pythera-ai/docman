@@ -40,67 +40,6 @@ class DocumentMetadata(BaseModel):
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
-class SearchFilters(BaseModel):
-    """Search filters for document queries"""
-    document_ids: Optional[List[str]] = Field(None, description="Filter by document IDs")
-    user_ids: Optional[List[str]] = Field(None, description="Filter by user IDs")
-    session_ids: Optional[List[str]] = Field(None, description="Filter by session IDs")
-    pages: Optional[List[int]] = Field(None, description="Filter by page numbers")
-    date_range: Optional['DateRange'] = Field(None, description="Filter by date range")
-    file_types: Optional[List[str]] = Field(None, description="Filter by file types")
-    
-    @validator('file_types')
-    def validate_file_types(cls, v):
-        if v:
-            allowed_types = ['pdf', 'docx', 'txt', 'md', 'rtf']
-            invalid_types = [t for t in v if t.lower() not in allowed_types]
-            if invalid_types:
-                raise ValueError(f"Invalid file types: {invalid_types}")
-        return v
-
-class DateRange(BaseModel):
-    """Date range filter"""
-    start: Optional[datetime] = None
-    end: Optional[datetime] = None
-    
-    @validator('end')
-    def validate_date_range(cls, v, values):
-        if v and 'start' in values and values['start'] and v < values['start']:
-            raise ValueError('End date must be after start date')
-        return v
-
-class SearchParams(BaseModel):
-    """Search parameters"""
-    limit: int = Field(10, ge=1, le=100, description="Number of results to return")
-    collection_name: str = Field("document_chunks", description="Collection to search")
-    include_metadata: bool = Field(True, description="Include document metadata")
-
-class VectorSearchRequest(BaseModel):
-    """Vector search request"""
-    query_vector: List[float] = Field(..., description="Query embedding vector")
-    filters: Optional[SearchFilters] = None
-    params: Optional[SearchParams] = None
-    
-    @validator('query_vector')
-    def validate_vector_dimension(cls, v):
-        if len(v) not in [768, 1536]:  # Common embedding dimensions
-            raise ValueError(f"Vector dimension must be 768 or 1536, got {len(v)}")
-        return v
-
-class ChunkResult(BaseModel):
-    """Individual chunk search result"""
-    id: str = Field(..., description="Chunk identifier")
-    score: float = Field(..., ge=0.0, le=1.0, description="Similarity score")
-    payload: DocumentPayload = Field(..., description="Chunk payload")
-
-class SearchResponse(BaseModel):
-    """Search response"""
-    status: str = Field(..., description="Response status")
-    chunks: List[ChunkResult] = Field(default_factory=list, description="Search results")
-    total_found: int = Field(0, description="Total number of results")
-    processing_time_ms: int = Field(..., description="Processing time in milliseconds")
-    collection_searched: str = Field(..., description="Collection that was searched")
-    filters_applied: Optional[SearchFilters] = None
 
 # Document upload models
 class DocumentUploadRequest(BaseModel):
@@ -167,7 +106,74 @@ class ErrorResponse(BaseModel):
     message: str = Field(..., description="Error message")
     details: Dict[str, Any] = Field(default_factory=dict, description="Error details")
 
-# Update forward references
-SearchFilters.update_forward_refs()
-DocumentPayload.update_forward_refs()
-ChunkResult.update_forward_refs()
+
+class ChunkMetadata(BaseModel):
+    """Chunk metadata for upload to Qdrant"""
+    chunk_id: str = Field(..., description="Unique chunk identifier")
+    document_id: str = Field(..., description="Document identifier")
+    document_title: str = Field(..., description="Document title/filename")
+    chunk_text: str = Field(..., description="Chunk text content")
+    vector: List[float] = Field(..., description="Embedding vector")
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata")
+    page_number: Optional[int] = Field(None, description="Page number")
+    section: Optional[str] = Field(None, description="Document section")
+
+
+class SearchRequest(BaseModel):
+    """Search request model"""
+    query_vector: List[float] = Field(..., description="Query embedding vector")
+    limit: Optional[int] = Field(5, description="Number of results to return")
+    filters: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional search filters")
+
+
+class SearchResult(BaseModel):
+    """Individual search result"""
+    chunk_id: str = Field(..., description="Chunk identifier")
+    document_id: str = Field(..., description="Document identifier")
+    document_title: str = Field(..., description="Document title")
+    chunk_text: str = Field(..., description="Relevant text excerpt")
+    similarity_score: float = Field(..., description="Similarity score")
+    source: str = Field(..., description="Source type (main|temp)")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+
+
+class SearchResponse(BaseModel):
+    """Search response model"""
+    query_vector: List[float] = Field(..., description="Original query vector")
+    results: List[SearchResult] = Field(..., description="Search results")
+    total_results: int = Field(..., description="Total number of results")
+    search_time_ms: int = Field(..., description="Search time in milliseconds")
+
+
+class ChunkUploadRequest(BaseModel):
+    """Request model for uploading chunks"""
+    chunks: List[ChunkMetadata] = Field(..., description="List of chunks to upload")
+
+
+class ChunkUploadResponse(BaseModel):
+    """Response model for chunk upload"""
+    status: str = Field(..., description="Upload status")
+    chunks_processed: int = Field(..., description="Number of chunks processed")
+    processing_time_ms: int = Field(..., description="Processing time in milliseconds")
+    failed_chunks: Optional[List[Dict[str, Any]]] = Field(None, description="Failed chunk details")
+
+
+class ChunkUpdateRequest(BaseModel):
+    """Request model for updating chunks"""
+    chunk_id: str = Field(..., description="Chunk ID to update")
+    chunk_text: Optional[str] = Field(None, description="Updated chunk text")
+    vector: Optional[List[float]] = Field(None, description="Updated embedding vector")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Updated metadata")
+
+
+class ChunkDeleteRequest(BaseModel):
+    """Request model for deleting chunks"""
+    chunk_ids: List[str] = Field(..., description="List of chunk IDs to delete")
+
+
+class ChunkOperationResponse(BaseModel):
+    """Response model for chunk operations"""
+    status: str = Field(..., description="Operation status")
+    chunks_affected: int = Field(..., description="Number of chunks affected")
+    processing_time_ms: int = Field(..., description="Processing time in milliseconds")
+    errors: Optional[List[Dict[str, Any]]] = Field(None, description="Error details if any")
