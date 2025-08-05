@@ -148,24 +148,19 @@ class QdrantChunksDB(InterfaceDatabase):
         
         # Ensure collection exists
         try:
-            if not self._client.collection_exists(collection_name):
-                dimension = kwargs.get('dimension', 768)
-                distance = kwargs.get('distance', 'cosine')
-                if not self.create_collection(collection_name, dimension, distance):
-                    return {
-                        'status': 'failed',
-                        'message': f'Failed to create collection {collection_name}',
-                        'points_processed': 0,
-                        'processing_time_ms': int((time.time() - start_time) * 1000)
-                    }
+            is_existed = self._client.collection_exists(collection_name)
+            logging.info(f"Collection '{collection_name}' exists: {is_existed}")
         except Exception as e:
-            return {
-                'status': 'failed',
-                'message': f'Error checking collection: {str(e)}',
-                'points_processed': 0,
-                'processing_time_ms': int((time.time() - start_time) * 1000)
-            }
-        
+            dimension = kwargs.get('dimension', 768)
+            distance = kwargs.get('distance', 'cosine')
+            if not self.create_collection(collection_name, dimension, distance):
+                return {
+                    'status': 'failed',
+                    'message': f'Failed to create collection {collection_name}',
+                    'points_processed': 0,
+                    'processing_time_ms': 0
+                }
+
         # Prepare points for insertion
         qdrant_points = []
         failed_points = []
