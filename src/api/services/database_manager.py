@@ -225,12 +225,15 @@ class DatabaseManager:
                 
                 postgres_points = [{
                     'document_id': document_id,
+                    'user_id': metadata.get('user_id', 'anonymous') if metadata else 'anonymous',
                     'filename': filename,
                     'file_size': len(file_data),
-                    'content_type': content_type,
-                    'file_hash': file_hash,
-                    'chunks_count': 0,  # Will be updated after chunking
+                    'file_url': minio_result['documents'][0]['file_url'],
+                    'file_type': content_type.split('/')[-1] if content_type else None,
                     'processing_status': 'uploaded',
+                    'chunks_count': 0,
+                    'created_at': datetime.utcnow(),
+                    'updated_at': datetime.utcnow(),
                     'metadata': metadata or {}
                 }]
                 

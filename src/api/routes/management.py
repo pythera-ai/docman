@@ -329,54 +329,6 @@ async def delete_session(
         )
 
 
-@router.get("/sessions/{session_id}/documents")
-async def get_session_documents(
-    session_id: str,
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    db_manager: DatabaseManager = Depends(get_database_manager)
-) -> Dict[str, Any]:
-    """
-    Get all documents for a specific session.
-    
-    Args:
-        session_id: Session identifier
-        limit: Maximum number of documents to return
-        offset: Number of documents to skip
-        db_manager: Database manager instance
-        
-    Returns:
-        Dict: Documents and pagination info
-        
-    Raises:
-        HTTPException: If retrieval fails
-    """
-    try:
-        result = await db_manager.get_session_documents(
-            session_id=session_id,
-            limit=limit,
-            offset=offset
-        )
-        
-        if result.get("error"):
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to get session documents: {result['error']}"
-            )
-        
-        return result
-        
-    except DatabaseConnectionException as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Database connection error: {e.message}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get session documents: {str(e)}"
-        )
-
 
 @router.post("/sessions/expire")
 async def expire_old_sessions(

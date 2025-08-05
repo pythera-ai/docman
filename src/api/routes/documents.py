@@ -7,7 +7,7 @@ import hashlib
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Body
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -94,7 +94,7 @@ async def upload_document(
             content_type=doc_metadata.content_type,
             file_hash=file_hash,
             document_id=document_id,
-            metadata=doc_metadata.dict()
+            metadata=doc_metadata.metadata
         )
         
         # Return document information
@@ -121,30 +121,42 @@ async def upload_document(
         )
 
 
-@router.get("/session/{session_id}/documents", response_model=List[Document])
-async def list_session_documents(
+@router.get("/sessions/{session_id}/documents")
+async def get_session_documents(
     session_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     db_manager: DatabaseManager = Depends(get_database_manager)
-) -> List[Document]:
+) -> Dict[str, Any]:
     """
     FR001: Session Management - List all documents in a session.
     
     Args:
         session_id: Session identifier
+        limit: Maximum number of documents to return
+        offset: Number of documents to skip
         db_manager: Database manager instance
         
     Returns:
-        List[Document]: List of documents in the session
+        Dict: Documents and pagination info
         
     Raises:
         HTTPException: If retrieval fails
     """
     try:
-        # This would typically query the database for documents by session_id
-        # For now, returning an empty list as a placeholder
-        # In practice, you'd implement a query method in the database manager
+        result = await db_manager.get_session_documents(
+            session_id=session_id,
+            limit=limit,
+            offset=offset
+        )
         
-        return []
+        if result.get("error"):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get session documents: {result['error']}"
+            )
+        
+        return result
         
     except DatabaseConnectionException as e:
         raise HTTPException(
@@ -154,9 +166,8 @@ async def list_session_documents(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve session documents: {str(e)}"
+            detail=f"Failed to get session documents: {str(e)}"
         )
-
 
 @router.get("/{document_id}/download")
 async def download_document(
