@@ -17,6 +17,7 @@ from src.core.models import (
 )
 from src.api.services.database_manager import DatabaseManager
 from src.core.exceptions import DatabaseConnectionException
+from src.api.dependencies import get_database_manager
 
 
 # Additional models for API responses
@@ -44,11 +45,6 @@ class ChunkMetadata(BaseModel):
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
-
-# Dependency to get database manager instance
-async def get_database_manager() -> DatabaseManager:
-    """Get database manager instance."""
-    return DatabaseManager()
 
 
 @router.post("/session/{session_id}/upload", response_model=Document)

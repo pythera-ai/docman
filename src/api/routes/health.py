@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from src.core.config import config
 from src.api.services.database_manager import DatabaseManager
 from src.core.exceptions import DatabaseConnectionException
+from src.api.dependencies import get_database_manager
 
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -43,12 +44,6 @@ class DetailedHealthResponse(BaseModel):
 
 # Store application start time for uptime calculation
 _app_start_time = datetime.utcnow()
-
-
-# Dependency to get database manager instance
-async def get_database_manager() -> DatabaseManager:
-    """Get database manager instance."""
-    return DatabaseManager()
 
 
 @router.get("/", response_model=HealthStatus)

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from src.core.config import config
 from src.api.services.database_manager import DatabaseManager
 from src.core.exceptions import DatabaseConnectionException
+from src.api.dependencies import get_database_manager
 
 
 router = APIRouter(prefix="/management", tags=["management"])
@@ -68,12 +69,6 @@ class AdminStatsResponse(BaseModel):
     total_searches: int
     system_uptime_seconds: float
     database_status: Dict[str, bool]
-
-
-# Dependency to get database manager instance
-async def get_database_manager() -> DatabaseManager:
-    """Get database manager instance."""
-    return DatabaseManager()
 
 
 # =============================================

@@ -1,5 +1,4 @@
 """
-Search routes for handling document search and retrieval.
 Implements FR003 functional requirements.
 """
 from typing import List, Optional, Dict, Any
@@ -12,6 +11,7 @@ from src.core.config import config
 from src.core.models import SearchResponse, SearchFilters, SearchParams
 from src.api.services.database_manager import DatabaseManager
 from src.core.exceptions import DatabaseConnectionException
+from src.api.dependencies import get_database_manager
 
 
 router = APIRouter(prefix="/search", tags=["search"])
