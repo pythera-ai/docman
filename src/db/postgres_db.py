@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import uuid
+import time
 from datetime import datetime
 from typing import Optional, List, Any, Dict
 from dataclasses import dataclass
@@ -123,6 +124,8 @@ class PostgresDB(InterfaceDatabase):
             
         try:
             self._connection = psycopg2.connect(**self.connection_params)
+            # Initialize tables after successful connection
+            self._create_tables()
             return True
         except Exception as e:
             logging.error(f"Database connection failed: {e}")
@@ -139,6 +142,79 @@ class PostgresDB(InterfaceDatabase):
             return True
         except:
             return self._connect()
+    
+    def _create_tables(self) -> bool:
+        """Create required database tables if they don't exist"""
+        if not self._connection:
+            return False
+        
+        try:
+            with self._connection.cursor() as cursor:
+                # Create documents table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS documents (
+                        document_id VARCHAR(255) PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        filename VARCHAR(500) NOT NULL,
+                        file_type VARCHAR(50),
+                        file_size BIGINT NOT NULL,
+                        minio_path TEXT NOT NULL,
+                        processing_status VARCHAR(50) DEFAULT 'pending',
+                        chunks_count INTEGER DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        metadata JSONB
+                    )
+                ''')
+                
+                # Create sessions table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        user_id VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        expires_at TIMESTAMP NOT NULL,
+                        status VARCHAR(20) DEFAULT 'active',
+                        metadata JSONB,
+                        temp_collection_name VARCHAR(255)
+                    )
+                ''')
+                
+                # Create indexes for better performance
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_documents_user_id 
+                    ON documents(user_id)
+                ''')
+                
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_documents_created_at 
+                    ON documents(created_at)
+                ''')
+                
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_sessions_user_id 
+                    ON sessions(user_id)
+                ''')
+                
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at 
+                    ON sessions(expires_at)
+                ''')
+                
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_sessions_status 
+                    ON sessions(status)
+                ''')
+                
+                self._connection.commit()
+                logging.info("✅ Database tables created successfully")
+                return True
+                
+        except Exception as e:
+            logging.error(f"Failed to create database tables: {e}")
+            if self._connection:
+                self._connection.rollback()
+            return False
     
     def insert(self, points: List[Any], **kwargs) -> dict:
         """
@@ -782,16 +858,20 @@ class PostgresDB(InterfaceDatabase):
                 raise Exception("No database connection")
                 
             with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Generate unique session ID
+                session_id = str(uuid.uuid4())
+                
                 # Insert new session
                 insert_query = """
                     INSERT INTO sessions (
-                        user_id, expires_at, metadata, temp_collection_name
+                        session_id, user_id, expires_at, metadata, temp_collection_name
                     ) VALUES (
-                        %s, %s, %s, %s
+                        %s, %s, %s, %s, %s
                     ) RETURNING *
                 """
                 
                 cursor.execute(insert_query, (
+                    session_id,
                     user_id,
                     expires_at,
                     Json(metadata) if metadata and Json else json.dumps(metadata) if metadata else None,
