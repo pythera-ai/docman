@@ -1,6 +1,10 @@
 """
-Document management routes for handling document upload, processing, and management.
-Implements FR001-FR004 functional requirements.
+Document management routes - CRUD operations for documents.
+Supports the 4 core features:
+1. Session management integration
+2. Document CRUD operations  
+3. Chunks management integration
+4. Metrics and logging
 """
 import uuid
 import hashlib
@@ -43,8 +47,7 @@ async def upload_document(
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> Document:
     """
-    FR001: Session Management - Upload document to a specific session.
-    FR002: Document Upload and Processing - Handle file upload and processing.
+    Upload document to a specific session (Core Feature: Document CRUD + Session integration).
     
     Args:
         session_id: Session identifier
@@ -87,8 +90,8 @@ async def upload_document(
             }
         )
         
-        # Upload document using database manager with correct parameters
-        result = await db_manager.upload_document(
+        # Upload document using database manager with correct method name
+        result = await db_manager.create_document(
             file_data=file_content,
             filename=doc_metadata.filename,
             content_type=doc_metadata.content_type,
@@ -296,7 +299,7 @@ async def delete_document(
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> dict:
     """
-    FR006: Document Management - Delete documents.
+    Delete document from all databases (Core Feature: Document CRUD).
     
     Args:
         document_id: Document identifier
@@ -350,7 +353,7 @@ async def update_document_metadata(
         HTTPException: If update fails
     """
     try:
-        result = await db_manager.update_document_metadata(
+        result = await db_manager.update_document(
             document_id=document_id,
             updates=metadata
         )
@@ -579,7 +582,7 @@ async def get_document_metadata(
     """
     try:
         # Get metadata from PostgreSQL first (authoritative source)
-        metadata = await db_manager.get_document_metadata(document_id=document_id)
+        metadata = await db_manager.get_document(document_id=document_id)
         
         if metadata is None:
             # Try getting from MinIO as fallback

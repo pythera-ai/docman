@@ -1,6 +1,10 @@
 """
-Document management routes for handling document upload, processing, and management.
-Implements FR001-FR004 functional requirements.
+Chunks management routes - CRUD operations for document chunks.
+Supports the 4 core features:
+1. Session management integration
+2. Document management integration
+3. Chunks CRUD operations
+4. Metrics and logging
 """
 from typing import List, Dict, Any
 from datetime import datetime
@@ -26,7 +30,7 @@ async def upload_chunks(
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> ChunkUploadResponse:
     """
-    Upload chunks to Qdrant vector database.
+    Upload chunks to Qdrant vector database (Core Feature: Chunks CRUD + Session integration).
     
     Args:
         session_id: Session identifier
@@ -61,7 +65,7 @@ async def upload_chunks(
             chunks_data.append(chunk_data)
         
         # Store chunks using database manager
-        result = await db_manager.store_chunks(chunks=chunks_data)
+        result = await db_manager.create_chunks(chunks=chunks_data)
         
         processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
         
@@ -124,7 +128,7 @@ async def search_chunks(
         }
         
         # Perform search using database manager
-        result = await db_manager.search_chunks(
+        result = await db_manager.get_chunks(
             query_vector=request.query_vector,
             filters=search_params,
             limit=request.limit or 5
@@ -219,13 +223,9 @@ async def update_chunks(
             
             update_points.append(point_data)
         
-        # Perform update using Qdrant client directly via database manager
-        if not db_manager.qdrant_client:
-            raise DatabaseConnectionException("Qdrant", {"reason": "client_not_initialized"})
-        
-        result = db_manager.qdrant_client.update(
-            points=update_points,
-            collection_name=config.qdrant.default_collection_name
+        # Perform update using database manager
+        result = await db_manager.update_chunks(
+            chunks=update_points
         )
         
         processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
@@ -272,13 +272,9 @@ async def delete_chunks(
     try:
         start_time = datetime.utcnow()
         
-        # Perform deletion using Qdrant client directly via database manager
-        if not db_manager.qdrant_client:
-            raise DatabaseConnectionException("Qdrant", {"reason": "client_not_initialized"})
-        
-        result = db_manager.qdrant_client.delete(
-            points_ids=request.chunk_ids,
-            collection_name=config.qdrant.default_collection_name
+        # Perform deletion using database manager
+        result = await db_manager.delete_chunks(
+            chunk_ids=request.chunk_ids
         )
         
         processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)

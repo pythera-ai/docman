@@ -1,6 +1,10 @@
 """
-Management routes for session management and administrative functions.
-Implements FR005 and administrative features.
+Session management routes - CRUD operations for sessions.
+Supports the 4 core features:
+1. Session CRUD operations
+2. Document management integration
+3. Chunks management integration
+4. Metrics and logging
 """
 import logging
 from typing import List, Dict, Any, Optional
@@ -16,7 +20,7 @@ from src.api.dependencies import get_database_manager
 
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/management", tags=["management"])
+router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
 class SessionInfo(BaseModel):
@@ -46,23 +50,6 @@ class SessionUpdateRequest(BaseModel):
     extend_hours: Optional[int] = None  # Extend expiration by X hours
 
 
-class SessionFinalizationRequest(BaseModel):
-    """Session finalization request"""
-    session_id: str
-    finalize_type: str = "normal"  # normal, force, cleanup
-    preserve_documents: bool = True
-
-
-class SessionFinalizationResponse(BaseModel):
-    """Session finalization response"""
-    session_id: str
-    status: str
-    documents_processed: int
-    cleanup_performed: bool
-    finalization_time: datetime
-    message: str
-
-
 class AdminStatsResponse(BaseModel):
     """Administrative statistics response"""
     total_sessions: int
@@ -74,16 +61,16 @@ class AdminStatsResponse(BaseModel):
 
 
 # =============================================
-# SESSION MANAGEMENT ENDPOINTS
+# SESSION CRUD OPERATIONS
 # =============================================
 
-@router.post("/sessions", response_model=SessionInfo)
+@router.post("/", response_model=SessionInfo)
 async def create_session(
     request: SessionCreateRequest,
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> SessionInfo:
     """
-    Create a new session for chat history and document management.
+    Create a new session (Core Feature: Session CRUD).
     
     Args:
         request: Session creation parameters
@@ -127,13 +114,13 @@ async def create_session(
         )
 
 
-@router.get("/sessions/{session_id}", response_model=SessionInfo)
+@router.get("/{session_id}", response_model=SessionInfo)
 async def get_session(
     session_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> SessionInfo:
     """
-    Get session information by ID.
+    Get session information by ID (Core Feature: Session CRUD).
     
     Args:
         session_id: Session identifier
@@ -170,7 +157,7 @@ async def get_session(
         )
 
 
-@router.get("/users/{user_id}/sessions", response_model=List[SessionInfo])
+@router.get("/users/{user_id}", response_model=List[SessionInfo])
 async def get_user_sessions(
     user_id: str,
     status: Optional[str] = Query(None, description="Filter by session status"),
@@ -179,7 +166,7 @@ async def get_user_sessions(
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> List[SessionInfo]:
     """
-    Get sessions for a specific user.
+    Get all sessions for a specific user (Core Feature: Session CRUD).
     
     Args:
         user_id: User identifier
@@ -222,14 +209,14 @@ async def get_user_sessions(
         )
 
 
-@router.put("/sessions/{session_id}", response_model=SessionInfo)
+@router.put("/{session_id}", response_model=SessionInfo)
 async def update_session(
     session_id: str,
     request: SessionUpdateRequest,
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> SessionInfo:
     """
-    Update session information.
+    Update session information (Core Feature: Session CRUD).
     
     Args:
         session_id: Session identifier
@@ -282,13 +269,13 @@ async def update_session(
         )
 
 
-@router.delete("/sessions/{session_id}")
+@router.delete("/{session_id}")
 async def delete_session(
     session_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> Dict[str, Any]:
     """
-    Delete a session.
+    Delete a session (Core Feature: Session CRUD).
     
     Args:
         session_id: Session identifier
@@ -330,12 +317,12 @@ async def delete_session(
 
 
 
-@router.post("/sessions/expire")
+@router.post("/expire")
 async def expire_old_sessions(
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> Dict[str, Any]:
     """
-    Mark expired sessions as 'expired' based on expires_at timestamp.
+    Mark expired sessions as 'expired' (Core Feature: Session Management + Metrics).
     
     Args:
         db_manager: Database manager instance
@@ -373,237 +360,42 @@ async def expire_old_sessions(
         )
 
 
-# =============================================
-# LEGACY SESSION MANAGEMENT (KEEPING FOR COMPATIBILITY)
-# =============================================
-
-
-@router.post("/session/{session_id}/finalize", response_model=SessionFinalizationResponse)
-async def finalize_session(
+@router.get("/{session_id}/documents")
+async def get_session_documents(
     session_id: str,
-    request: Optional[SessionFinalizationRequest] = None,
-    db_manager: DatabaseManager = Depends(get_database_manager)
-) -> SessionFinalizationResponse:
-    """
-    FR005: Session Finalization - Finalize a session and perform cleanup.
-    
-    Args:
-        session_id: Session identifier to finalize
-        request: Finalization options
-        db_manager: Database manager instance
-        
-    Returns:
-        SessionFinalizationResponse: Finalization results
-        
-    Raises:
-        HTTPException: If finalization fails
-    """
-    try:
-        current_time = datetime.utcnow()
-        
-        # Default finalization request if none provided
-        if not request:
-            request = SessionFinalizationRequest(
-                session_id=session_id,
-                finalize_type="normal",
-                preserve_documents=True
-            )
-        
-        # Get current session data
-        session_data = await db_manager.get_session(session_id)
-        if not session_data:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Session {session_id} not found"
-            )
-        
-        # Count documents associated with this session
-        documents_processed = 0
-        try:
-            docs_result = await db_manager.get_session_documents(session_id)
-            documents_processed = docs_result.get("total_found", 0)
-        except Exception as e:
-            logger.warning(f"Could not count session documents: {e}")
-        
-        # Update session status to finalized
-        cleanup_performed = request.finalize_type in ["force", "cleanup"]
-        
-        try:
-            await db_manager.update_session(
-                session_id=session_id,
-                status="finalized",
-                metadata={
-                    **(session_data.get("metadata", {})),
-                    "finalized_at": current_time.isoformat(),
-                    "finalize_type": request.finalize_type,
-                    "preserve_documents": request.preserve_documents
-                }
-            )
-        except Exception as e:
-            logger.warning(f"Could not update session status: {e}")
-        
-        return SessionFinalizationResponse(
-            session_id=session_id,
-            status="finalized",
-            documents_processed=documents_processed,
-            cleanup_performed=cleanup_performed,
-            finalization_time=current_time,
-            message=f"Session {session_id} successfully finalized"
-        )
-        
-    except DatabaseConnectionException as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Database connection error: {e.message}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Session finalization failed: {str(e)}"
-        )
-
-
-@router.get("/sessions", response_model=List[SessionInfo])
-async def list_sessions(
-    user_id: str,
-    status: Optional[str] = Query(None, description="Filter by session status"),
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db_manager: DatabaseManager = Depends(get_database_manager)
-) -> List[SessionInfo]:
+) -> Dict[str, Any]:
     """
-    List sessions with optional filtering.
+    Get all documents for a specific session (Core Feature: Session + Document integration).
     
     Args:
-        status: Optional status filter (active, finalized, expired)
-        limit: Maximum number of sessions to return
-        offset: Number of sessions to skip
+        session_id: Session identifier
+        limit: Maximum number of documents to return
+        offset: Number of documents to skip
         db_manager: Database manager instance
         
     Returns:
-        List[SessionInfo]: List of session information
+        Dict: Documents and pagination info
         
     Raises:
-        HTTPException: If listing fails
+        HTTPException: If retrieval fails
     """
     try:
-    
-        result = await db_manager.get_user_sessions(
-            user_id=user_id,  # Empty user_id to indicate "all users"
-            status=status,
+        result = await db_manager.get_session_documents(
+            session_id=session_id,
             limit=limit,
             offset=offset
         )
         
         if result.get("error"):
-            # If the empty user_id approach doesn't work, return empty list
-            logger.warning(f"Could not list all sessions: {result['error']}")
-            return []
-        
-        return [SessionInfo(**session) for session in result["sessions"]]
-    
-    except DatabaseConnectionException as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Database connection error: {e.message}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to list sessions: {str(e)}"
-        )
-
-
-@router.get("/session/{session_id}", response_model=SessionInfo)
-async def get_session_info(
-    session_id: str,
-    db_manager: DatabaseManager = Depends(get_database_manager)
-) -> SessionInfo:
-    """
-    Get detailed information about a specific session.
-    
-    Args:
-        session_id: Session identifier
-        db_manager: Database manager instance
-        
-    Returns:
-        SessionInfo: Session information
-        
-    Raises:
-        HTTPException: If session not found or retrieval fails
-    """
-    try:
-        # Get session information using the database manager
-        session_data = await db_manager.get_session(session_id)
-        
-        if not session_data:
             raise HTTPException(
-                status_code=404,
-                detail=f"Session {session_id} not found"
+                status_code=500,
+                detail=f"Failed to get session documents: {result['error']}"
             )
         
-        return SessionInfo(**session_data)
-        
-    except HTTPException:
-        raise
-    except DatabaseConnectionException as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Database connection error: {e.message}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve session info: {str(e)}"
-        )
-
-
-@router.delete("/session/{session_id}")
-async def delete_legacy_session(
-    session_id: str,
-    force: bool = Query(False, description="Force delete even if session is active"),
-    db_manager: DatabaseManager = Depends(get_database_manager)
-) -> Dict[str, Any]:
-    """
-    LEGACY: Delete a session and optionally its associated documents.
-    Use DELETE /sessions/{session_id} for the new session management API.
-    
-    Args:
-        session_id: Session identifier
-        force: Force deletion even if session is active
-        db_manager: Database manager instance
-        
-    Returns:
-        Dict: Deletion status and results
-        
-    Raises:
-        HTTPException: If deletion fails
-    """
-    try:
-        # Use the actual database manager to delete the session
-        result = await db_manager.delete_session(session_id)
-        
-        if result.get("error"):
-            raise HTTPException(
-                status_code=404 if "not found" in result["error"].lower() else 500,
-                detail=f"Failed to delete session: {result['error']}"
-            )
-        
-        # Get session documents count before deletion for reporting
-        documents_deleted = 0
-        try:
-            docs_result = await db_manager.get_session_documents(session_id, limit=1)
-            documents_deleted = docs_result.get("total_found", 0)
-        except:
-            pass  # If we can't get document count, continue anyway
-        
-        return {
-            "message": f"Session {session_id} deleted successfully",
-            "session_id": session_id,
-            "forced": force,
-            "documents_deleted": documents_deleted,
-            "cleanup_completed": result.get("deleted", False)
-        }
+        return result
         
     except DatabaseConnectionException as e:
         raise HTTPException(
@@ -613,16 +405,20 @@ async def delete_legacy_session(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to delete session: {str(e)}"
+            detail=f"Failed to get session documents: {str(e)}"
         )
 
 
-@router.get("/stats", response_model=AdminStatsResponse)
+# =============================================  
+# ADMINISTRATION & MONITORING ENDPOINTS
+# =============================================
+
+@router.get("/admin/stats", response_model=AdminStatsResponse)
 async def get_admin_stats(
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> AdminStatsResponse:
     """
-    Get administrative statistics and system overview.
+    Get administrative statistics (Core Feature: Metrics and Logging).
     
     Args:
         db_manager: Database manager instance
@@ -682,14 +478,14 @@ async def get_admin_stats(
         )
 
 
-@router.post("/cleanup")
+@router.post("/admin/cleanup")
 async def perform_system_cleanup(
     cleanup_type: str = Query("normal", description="Type of cleanup: normal, deep, emergency"),
     dry_run: bool = Query(False, description="Perform dry run without actual cleanup"),
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> Dict[str, Any]:
     """
-    Perform system cleanup operations.
+    Perform system cleanup operations (Core Feature: Metrics and System Management).
     
     Args:
         cleanup_type: Type of cleanup to perform
@@ -759,53 +555,4 @@ async def perform_system_cleanup(
         raise HTTPException(
             status_code=500,
             detail=f"Cleanup operation failed: {str(e)}"
-        )
-
-
-@router.get("/logs")
-async def get_system_logs(
-    level: str = Query("INFO", description="Log level filter"),
-    limit: int = Query(100, ge=1, le=1000),
-    since: Optional[datetime] = Query(None, description="Show logs since this timestamp"),
-) -> Dict[str, Any]:
-    """
-    Retrieve system logs for monitoring and debugging.
-    
-    Args:
-        level: Log level filter (DEBUG, INFO, WARNING, ERROR)
-        limit: Maximum number of log entries
-        since: Optional timestamp filter
-        
-    Returns:
-        Dict: Log entries and metadata
-        
-    Raises:
-        HTTPException: If log retrieval fails
-    """
-    try:
-        valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR"]
-        if level not in valid_levels:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid log level. Valid levels: {valid_levels}"
-            )
-        
-        # This is a placeholder implementation
-        # In practice, you'd read from actual log files or logging system
-        
-        return {
-            "logs": [],
-            "level": level,
-            "limit": limit,
-            "since": since.isoformat() if since else None,
-            "total_entries": 0,
-            "message": "Log retrieval not yet implemented"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve logs: {str(e)}"
         )

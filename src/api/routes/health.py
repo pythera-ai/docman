@@ -1,6 +1,10 @@
 """
-Health monitoring routes for system status and diagnostics.
-Implements FR007 functional requirements.
+Health monitoring routes - System monitoring and metrics.
+Supports the 4 core features:
+1. Session management health
+2. Document management health  
+3. Chunks management health
+4. Comprehensive metrics and logging
 """
 from typing import Dict, Any
 from datetime import datetime

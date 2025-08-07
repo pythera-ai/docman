@@ -3,11 +3,10 @@
 Document Management System API
 
 This FastAPI application provides endpoints for:
-- Document upload and processing
-- Temporary document handling
+- Session management (CRUD)
 - Document management (CRUD)
-- Health monitoring
-#! NOT SUPPORT NOW: Vector search and retrieval  
+- Chunks management (CRUD)
+- Health monitoring and metrics
 """
 
 from fastapi import FastAPI, Request, HTTPException
@@ -22,9 +21,8 @@ from typing import Dict, Any
 from src.core import config, DocumentManagementException, metrics
 from src.api.routes import (
     documents,
-    search, 
     health,
-    management,
+    sessions,
     chunks
 )
 from src.api.services.database_manager import DatabaseManager
@@ -156,12 +154,11 @@ async def general_exception_handler(request: Request, exc: Exception):
         }
     )
 
-# Include routers
+# Include routers - focusing on core features only
 app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
-# app.include_router(search.router, prefix="/api/v1", tags=["search"])
-app.include_router(health.router, prefix="/api/v1", tags=["health"])
-app.include_router(management.router, prefix="/api/v1", tags=["management"])
 app.include_router(chunks.router, prefix="/api/v1", tags=["chunks"])
+app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
+app.include_router(health.router, prefix="/api/v1", tags=["health"])
 
 # Root endpoint
 @app.get("/")
@@ -187,9 +184,9 @@ async def api_info():
             "environment": config.environment
         },
         "features": {
-            "document_upload": True,
-            # "vector_search": True,
-            "temporary_documents": True,
+            "session_management": True,
+            "document_management": True,
+            "chunks_management": True,
             "health_monitoring": True,
             "metrics_collection": True
         },
