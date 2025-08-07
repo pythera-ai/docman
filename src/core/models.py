@@ -1,8 +1,77 @@
 # src/core/models.py
+"""
+Centralized data models for the Document Management System.
+All Pydantic BaseModel schemas are consolidated here to maintain consistency 
+and support the 4 core features:
+1. Session management by CRUD
+2. Document management by CRUD  
+3. Chunks management by CRUD
+4. Metrics and logging
+
+This file contains all request/response models, data structures, and validation logic.
+"""
 from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 from uuid import UUID
+
+
+# =============================================
+# SESSION MODELS
+# =============================================
+
+class SessionInfo(BaseModel):
+    """Session information model"""
+    session_id: str = Field(..., description="Unique session identifier")
+    user_id: str = Field(..., description="User identifier who owns the session")
+    created_at: datetime = Field(..., description="Session creation timestamp")
+    expires_at: datetime = Field(..., description="Session expiration timestamp")
+    status: str = Field(..., description="Session status (active, expired, etc.)")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional session metadata")
+    temp_collection_name: Optional[str] = Field(None, description="Temporary collection name for this session")
+
+
+class SessionCreateRequest(BaseModel):
+    """Session creation request"""
+    user_id: str = Field(..., description="User identifier")
+    expires_in_hours: int = Field(24, ge=1, le=168, description="Session duration in hours (1-168)")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Initial session metadata")
+    temp_collection_name: Optional[str] = Field(None, description="Custom temporary collection name")
+
+
+class SessionUpdateRequest(BaseModel):
+    """Session update request"""
+    status: Optional[str] = Field(None, description="New session status")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Updated metadata")
+    temp_collection_name: Optional[str] = Field(None, description="Updated temporary collection name")
+    extend_hours: Optional[int] = Field(None, ge=1, le=168, description="Extend expiration by X hours")
+
+
+class AdminStatsResponse(BaseModel):
+    """Administrative statistics response"""
+    total_sessions: int = Field(..., ge=0, description="Total number of sessions")
+    active_sessions: int = Field(..., ge=0, description="Number of active sessions")
+    total_documents: int = Field(..., ge=0, description="Total number of documents")
+    total_searches: int = Field(..., ge=0, description="Total number of searches performed")
+    system_uptime_seconds: float = Field(..., ge=0.0, description="System uptime in seconds")
+    database_status: Dict[str, bool] = Field(..., description="Database connection status")
+
+
+# =============================================
+# DOCUMENT MODELS
+# =============================================
+
+class Document(BaseModel):
+    """Document response model"""
+    document_id: str = Field(..., description="Unique document identifier")
+    filename: str = Field(..., description="Original filename")
+    content_type: str = Field(..., description="MIME content type")
+    file_size: int = Field(..., ge=0, description="File size in bytes")
+    upload_timestamp: datetime = Field(..., description="Upload timestamp")
+    session_id: str = Field(..., description="Associated session ID")
+    user_id: str = Field(..., description="User who uploaded the document")
+    status: str = Field(..., description="Processing status")
+
 
 # Document payload models aligned with database implementations
 class DocumentPayload(BaseModel):
@@ -27,6 +96,7 @@ class DocumentPayload(BaseModel):
             raise ValueError('Chunk content cannot be empty')
         return v.strip()
 
+
 class DocumentMetadata(BaseModel):
     """Document metadata structure for PostgreSQL storage"""
     document_id: str = Field(..., description="Unique document identifier")
@@ -41,7 +111,6 @@ class DocumentMetadata(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
-# Document upload models
 class DocumentUploadRequest(BaseModel):
     """Document upload request"""
     filename: str = Field(..., description="Original filename")
@@ -70,6 +139,7 @@ class DocumentUploadRequest(BaseModel):
             raise ValueError(f'File size {v} exceeds maximum limit of {max_size} bytes')
         return v
 
+
 class DocumentUploadResponse(BaseModel):
     """Document upload response following FR002 format"""
     documents: List[DocumentMetadata] = Field(default_factory=list, description="Successfully uploaded documents")
@@ -77,35 +147,10 @@ class DocumentUploadResponse(BaseModel):
     processing_time_ms: int = Field(..., description="Processing time in milliseconds")
     failed_uploads: Optional[List[Dict[str, str]]] = Field(None, description="Failed upload details")
 
-# Chunk insertion models
-class ChunkInsertRequest(BaseModel):
-    """Chunk insertion request"""
-    vector: List[float] = Field(..., description="Embedding vector")
-    payload: DocumentPayload = Field(..., description="Chunk payload")
-    id: Optional[str] = Field(None, description="Chunk ID (generated if not provided)")
 
-class ChunkInsertResponse(BaseModel):
-    """Chunk insertion response"""
-    status: str = Field(..., description="Response status")
-    points_processed: int = Field(0, description="Number of points processed")
-    processing_time_ms: int = Field(..., description="Processing time in milliseconds")
-    failed_points: Optional[List[Dict[str, Any]]] = Field(None, description="Failed point details")
-
-# Database operation response models
-class DatabaseOperationResponse(BaseModel):
-    """Generic database operation response"""
-    status: str = Field(..., description="Operation status (success/failed)")
-    message: Optional[str] = Field(None, description="Operation message")
-    processing_time_ms: int = Field(..., description="Processing time in milliseconds")
-    details: Dict[str, Any] = Field(default_factory=dict, description="Additional details")
-
-class ErrorResponse(BaseModel):
-    """Error response model"""
-    error: bool = Field(True, description="Error flag")
-    error_code: str = Field(..., description="Error code")
-    message: str = Field(..., description="Error message")
-    details: Dict[str, Any] = Field(default_factory=dict, description="Error details")
-
+# =============================================
+# CHUNK MODELS  
+# =============================================
 
 class ChunkMetadata(BaseModel):
     """Chunk metadata for upload to Qdrant"""
@@ -119,30 +164,19 @@ class ChunkMetadata(BaseModel):
     section: Optional[str] = Field(None, description="Document section")
 
 
-class SearchRequest(BaseModel):
-    """Search request model"""
-    query_vector: List[float] = Field(..., description="Query embedding vector")
-    limit: Optional[int] = Field(5, description="Number of results to return")
-    filters: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional search filters")
+class ChunkInsertRequest(BaseModel):
+    """Chunk insertion request"""
+    vector: List[float] = Field(..., description="Embedding vector")
+    payload: DocumentPayload = Field(..., description="Chunk payload")
+    id: Optional[str] = Field(None, description="Chunk ID (generated if not provided)")
 
 
-class SearchResult(BaseModel):
-    """Individual search result"""
-    chunk_id: str = Field(..., description="Chunk identifier")
-    document_id: str = Field(..., description="Document identifier")
-    document_title: str = Field(..., description="Document title")
-    chunk_text: str = Field(..., description="Relevant text excerpt")
-    similarity_score: float = Field(..., description="Similarity score")
-    source: str = Field(..., description="Source type (main|temp)")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-
-
-class SearchResponse(BaseModel):
-    """Search response model"""
-    query_vector: List[float] = Field(..., description="Original query vector")
-    results: List[SearchResult] = Field(..., description="Search results")
-    total_results: int = Field(..., description="Total number of results")
-    search_time_ms: int = Field(..., description="Search time in milliseconds")
+class ChunkInsertResponse(BaseModel):
+    """Chunk insertion response"""
+    status: str = Field(..., description="Response status")
+    points_processed: int = Field(0, description="Number of points processed")
+    processing_time_ms: int = Field(..., description="Processing time in milliseconds")
+    failed_points: Optional[List[Dict[str, Any]]] = Field(None, description="Failed point details")
 
 
 class ChunkUploadRequest(BaseModel):
@@ -177,3 +211,102 @@ class ChunkOperationResponse(BaseModel):
     chunks_affected: int = Field(..., description="Number of chunks affected")
     processing_time_ms: int = Field(..., description="Processing time in milliseconds")
     errors: Optional[List[Dict[str, Any]]] = Field(None, description="Error details if any")
+
+
+# =============================================
+# SEARCH MODELS  
+# =============================================
+
+class SearchRequest(BaseModel):
+    """Search request model"""
+    query_vector: List[float] = Field(..., description="Query embedding vector")
+    limit: Optional[int] = Field(5, ge=1, le=100, description="Number of results to return")
+    filters: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional search filters")
+
+
+class SearchResult(BaseModel):
+    """Individual search result"""
+    chunk_id: str = Field(..., description="Chunk identifier")
+    document_id: str = Field(..., description="Document identifier")
+    document_title: str = Field(..., description="Document title")
+    chunk_text: str = Field(..., description="Relevant text excerpt")
+    similarity_score: float = Field(..., ge=0.0, le=1.0, description="Similarity score")
+    source: str = Field(..., description="Source type (main|temp)")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+
+
+class SearchResponse(BaseModel):
+    """Search response model"""
+    query_vector: List[float] = Field(..., description="Original query vector")
+    results: List[SearchResult] = Field(..., description="Search results")
+    total_results: int = Field(..., ge=0, description="Total number of results")
+    search_time_ms: int = Field(..., ge=0, description="Search time in milliseconds")
+
+
+# =============================================
+# HEALTH & MONITORING MODELS
+# =============================================
+
+class HealthStatus(BaseModel):
+    """Health status response model"""
+    status: str = Field(..., description="Overall health status")
+    timestamp: datetime = Field(..., description="Health check timestamp")
+    uptime_seconds: float = Field(..., ge=0.0, description="System uptime in seconds")
+    version: str = Field("1.0.0", description="System version")
+
+
+class DatabaseHealth(BaseModel):
+    """Database health status model"""
+    minio: bool = Field(..., description="MinIO connection status")
+    qdrant: bool = Field(..., description="Qdrant connection status")
+    postgres: bool = Field(..., description="PostgreSQL connection status")
+    overall: bool = Field(..., description="Overall database health status")
+
+
+class DetailedHealthResponse(BaseModel):
+    """Detailed health response"""
+    status: str = Field(..., description="Overall system status")
+    timestamp: datetime = Field(..., description="Health check timestamp")
+    databases: DatabaseHealth = Field(..., description="Database health information")
+    system: Dict[str, Any] = Field(default_factory=dict, description="System information")
+    performance: Dict[str, Any] = Field(default_factory=dict, description="Performance metrics")
+
+
+# =============================================
+# GENERIC OPERATION MODELS
+# =============================================
+
+class DatabaseOperationResponse(BaseModel):
+    """Generic database operation response"""
+    status: str = Field(..., description="Operation status (success/failed)")
+    message: Optional[str] = Field(None, description="Operation message")
+    processing_time_ms: int = Field(..., ge=0, description="Processing time in milliseconds")
+    details: Dict[str, Any] = Field(default_factory=dict, description="Additional details")
+
+
+class ErrorResponse(BaseModel):
+    """Error response model"""
+    error: bool = Field(True, description="Error flag")
+    error_code: str = Field(..., description="Error code")
+    message: str = Field(..., description="Error message")
+    details: Dict[str, Any] = Field(default_factory=dict, description="Error details")
+
+
+# =============================================
+# PAGINATION & UTILITY MODELS
+# =============================================
+
+class PaginationInfo(BaseModel):
+    """Pagination information"""
+    page: int = Field(..., ge=1, description="Current page number")
+    limit: int = Field(..., ge=1, le=1000, description="Items per page")
+    total: int = Field(..., ge=0, description="Total number of items")
+    has_next: bool = Field(..., description="Whether there are more pages")
+    has_previous: bool = Field(..., description="Whether there are previous pages")
+
+
+class PaginatedResponse(BaseModel):
+    """Generic paginated response"""
+    data: List[Any] = Field(..., description="Response data")
+    pagination: PaginationInfo = Field(..., description="Pagination information")
+    processing_time_ms: int = Field(..., ge=0, description="Processing time in milliseconds")

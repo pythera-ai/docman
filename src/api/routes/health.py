@@ -10,40 +10,16 @@ from typing import Dict, Any
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
 
 from src.core.config import config
+from src.core.models import (
+    HealthStatus, DatabaseHealth, DetailedHealthResponse
+)
 from src.api.services.database_manager import DatabaseManager
-from src.core.exceptions import DatabaseConnectionException
 from src.api.dependencies import get_database_manager
 
 
 router = APIRouter(prefix="/health", tags=["health"])
-
-
-class HealthStatus(BaseModel):
-    """Health status response model"""
-    status: str
-    timestamp: datetime
-    uptime_seconds: float
-    version: str = "1.0.0"
-
-
-class DatabaseHealth(BaseModel):
-    """Database health status model"""
-    minio: bool
-    qdrant: bool
-    postgres: bool
-    overall: bool
-
-
-class DetailedHealthResponse(BaseModel):
-    """Detailed health response"""
-    status: str
-    timestamp: datetime
-    databases: DatabaseHealth
-    system: Dict[str, Any]
-    performance: Dict[str, Any]
 
 
 # Store application start time for uptime calculation
@@ -64,7 +40,8 @@ async def health_check() -> HealthStatus:
     return HealthStatus(
         status="healthy",
         timestamp=current_time,
-        uptime_seconds=uptime
+        uptime_seconds=uptime,
+        version="1.0.0"
     )
 
 

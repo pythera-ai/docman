@@ -13,28 +13,15 @@ from datetime import datetime
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 
 from src.core.config import config
 from src.core.models import (
-    DocumentMetadata, DocumentPayload, DatabaseOperationResponse
+    Document, DocumentMetadata
 )
 from src.api.services.database_manager import DatabaseManager
 from src.core.exceptions import DatabaseConnectionException
 from src.api.dependencies import get_database_manager
 
-
-# Document upload model (keeping original)
-class Document(BaseModel):
-    """Document response model"""
-    document_id: str
-    filename: str
-    content_type: str
-    file_size: int
-    upload_timestamp: datetime
-    session_id: str
-    user_id: str
-    status: str
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 

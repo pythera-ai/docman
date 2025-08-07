@@ -11,9 +11,11 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Depends, Query
-from pydantic import BaseModel
 
 from src.core.config import config
+from src.core.models import (
+    SessionInfo, SessionCreateRequest, SessionUpdateRequest, AdminStatsResponse
+)
 from src.api.services.database_manager import DatabaseManager
 from src.core.exceptions import DatabaseConnectionException
 from src.api.dependencies import get_database_manager
@@ -21,43 +23,6 @@ from src.api.dependencies import get_database_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sessions", tags=["sessions"])
-
-
-class SessionInfo(BaseModel):
-    """Session information model"""
-    session_id: str
-    user_id: str
-    created_at: datetime
-    expires_at: datetime
-    status: str
-    metadata: Dict[str, Any] = {}
-    temp_collection_name: Optional[str] = None
-
-
-class SessionCreateRequest(BaseModel):
-    """Session creation request"""
-    user_id: str
-    expires_in_hours: int = 24  # Default to 24 hours
-    metadata: Optional[Dict[str, Any]] = None
-    temp_collection_name: Optional[str] = None
-
-
-class SessionUpdateRequest(BaseModel):
-    """Session update request"""
-    status: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    temp_collection_name: Optional[str] = None
-    extend_hours: Optional[int] = None  # Extend expiration by X hours
-
-
-class AdminStatsResponse(BaseModel):
-    """Administrative statistics response"""
-    total_sessions: int
-    active_sessions: int
-    total_documents: int
-    total_searches: int
-    system_uptime_seconds: float
-    database_status: Dict[str, bool]
 
 
 # =============================================
