@@ -417,8 +417,10 @@ async def get_admin_stats(
             if not active_sessions_result.get("error"):
                 active_sessions = active_sessions_result.get("total_found", 0)
                 
-            # Note: For total_documents, we'd need a method to count all documents
-            # This could be added to the database manager if needed
+            for session in all_sessions_result.get("sessions", []):
+                session_documents = await db_manager.get_session_documents(session["session_id"])
+                total_documents += len(session_documents.get("documents", []))
+
             
         except Exception as e:
             logger.warning(f"Could not get detailed statistics: {e}")
