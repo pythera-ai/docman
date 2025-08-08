@@ -64,13 +64,29 @@ class TestCompleteWorkflow:
             "status": "success",
             "document_id": document_id
         }
+        
+        mock_db_manager.minio_client.insert.return_value = {
+            "documents": [
+                {
+                    "document_id": document_id,
+                    "filename": "workflow_test.pdf",
+                    "processing_status": "uploaded"
+                }
+            ],
+            "total_processed": 1,
+            "processing_time_ms": 45
+        }
         mock_db_manager.get_document.return_value = document_data
         mock_db_manager.download_document.return_value = {
             "file_content": b"Test workflow document content",
             "filename": "workflow_test.pdf",
             "content_type": "application/pdf"
         }
-        mock_db_manager.delete_document.return_value = {"status": "success"}
+        mock_db_manager.minio_client.delete.return_value = {
+            "documents": [{"document_id": document_id, "processing_status": "deleted"}],
+            "total_processed": 1,
+            "processing_time_ms": 25
+        }
         
         # Chunks operations
         chunk_ids = [str(uuid.uuid4()) for _ in range(3)]
@@ -141,6 +157,7 @@ class TestCompleteWorkflow:
         session_request = SessionCreateRequest(
             user_id=workflow_data["user_id"],
             expires_in_hours=24,
+            temp_collection_name="test_workflow_collection",
             metadata={"purpose": "document_processing", "workflow": "test"}
         )
         
@@ -281,9 +298,16 @@ class TestCompleteWorkflow:
         
         # Mock document operations
         shared_document_id = str(uuid.uuid4())
-        mock_db_manager.create_document.return_value = {
-            "status": "success",
-            "document_id": shared_document_id
+        mock_db_manager.minio_client.insert.return_value = {
+            "documents": [
+                {
+                    "document_id": shared_document_id,
+                    "filename": "shared_document.pdf",
+                    "processing_status": "uploaded"
+                }
+            ],
+            "total_processed": 1,
+            "processing_time_ms": 45
         }
         
         # Mock search results for both sessions
@@ -306,8 +330,7 @@ class TestCompleteWorkflow:
             "total_found": 1
         }
         
-        # Mock document listing
-        mock_db_manager.minio_client = Mock()
+        # Mock document listing  
         mock_db_manager.minio_client.search.return_value = {
             "documents": [
                 {
@@ -316,14 +339,14 @@ class TestCompleteWorkflow:
                     "file_size": 2048,
                     "upload_time": datetime.utcnow().isoformat()
                 }
-            ],
-            "processing_time_ms": 50
+            ]
         }
         
         # Create first session
         session1_request = SessionCreateRequest(
             user_id=user_id,
             expires_in_hours=12,
+            temp_collection_name="test_session1_collection",
             metadata={"role": "primary", "access": "write"}
         )
         
@@ -336,6 +359,7 @@ class TestCompleteWorkflow:
         session2_request = SessionCreateRequest(
             user_id=user_id,
             expires_in_hours=12,
+            temp_collection_name="test_session2_collection",
             metadata={"role": "secondary", "access": "read"}
         )
         
@@ -388,6 +412,11 @@ class TestCompleteWorkflow:
         
         # List documents should show shared document
         documents_list = await list_documents(
+            document_id=None,
+            filename_pattern=None,
+            include_metadata=True,
+            limit=100,
+            offset=0,
             db_manager=mock_db_manager
         )
         
@@ -441,6 +470,7 @@ class TestCompleteWorkflow:
         session_request = SessionCreateRequest(
             user_id=session_data["user_id"],
             expires_in_hours=12,
+            temp_collection_name="test_error_collection",
             metadata={"error_handling": "test"}
         )
         
@@ -536,7 +566,7 @@ class TestCompleteWorkflow:
         
         # Verify error handling calls were made
         assert mock_db_manager.create_session.call_count == 1
-        assert mock_db_manager.create_document.call_count == 1
+        assert mock_db_manager.create_document.call_count == 2  # One failed, one success
         assert mock_db_manager.create_chunks.call_count == 1
         assert mock_db_manager.get_session.call_count == 1
 
@@ -575,6 +605,7 @@ class TestPerformanceWorkflow:
         session_request = SessionCreateRequest(
             user_id=user_id,
             expires_in_hours=6,
+            temp_collection_name="test_bulk_collection",
             metadata={"purpose": "bulk_operations", "batch_size": 100}
         )
         
@@ -746,6 +777,7 @@ class TestPerformanceWorkflow:
             session_request = SessionCreateRequest(
                 user_id=user_ids[index],
                 expires_in_hours=1,
+                temp_collection_name=f"test_concurrent_collection_{index}",
                 metadata={"concurrent": True, "index": index}
             )
             

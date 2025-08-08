@@ -75,7 +75,9 @@ class TestSessionCreation:
         # Arrange
         request = SessionCreateRequest(
             user_id=str(uuid.uuid4()),
-            expires_in_hours=12
+            expires_in_hours=12,
+            temp_collection_name="test_collection",
+            metadata={"test": "create"}
         )
         
         mock_db_manager.create_session.return_value = {
@@ -100,7 +102,9 @@ class TestSessionCreation:
         # Arrange
         request = SessionCreateRequest(
             user_id=str(uuid.uuid4()),
-            expires_in_hours=6
+            expires_in_hours=6,
+            temp_collection_name="test_collection2",
+            metadata={"test": "create2"}
         )
         
         mock_db_manager.create_session.side_effect = DatabaseConnectionException(
@@ -340,7 +344,12 @@ class TestSessionUpdate:
         # Arrange
         session_id = str(uuid.uuid4())
         
-        request = SessionUpdateRequest(status="paused")
+        request = SessionUpdateRequest(
+            status="paused",
+            metadata={"updated": True},
+            temp_collection_name="updated_collection", 
+            extend_hours=None
+        )
         
         mock_db_manager.update_session.return_value = {
             "error": "Session not found"
@@ -365,11 +374,18 @@ class TestSessionUpdate:
         # Arrange
         session_id = sample_session_data["session_id"]
         
-        request = SessionUpdateRequest(extend_hours=6)
+        request = SessionUpdateRequest(
+            status=None,
+            metadata=None,
+            temp_collection_name=None,
+            extend_hours=6
+        )
         
         # Mock current session data
         current_session = sample_session_data.copy()
-        current_session["expires_at"] = datetime.utcnow() + timedelta(hours=12)
+        # Keep expires_at as string format as expected by API
+        original_expires_at = datetime.utcnow()
+        current_session["expires_at"] = original_expires_at.isoformat() + 'Z'
         mock_db_manager.get_session.return_value = current_session
         
         # Mock successful update
@@ -394,7 +410,9 @@ class TestSessionUpdate:
         assert "expires_at" in call_args
         # The extended time should be original + 6 hours
         extended_time = call_args["expires_at"]
-        assert extended_time > current_session["expires_at"]
+        expected_time = datetime.fromisoformat(current_session["expires_at"].replace('Z', '+00:00')) + timedelta(hours=6)
+        # Compare the times (both should be timezone aware now)
+        assert extended_time >= expected_time
 
 
 class TestSessionDeletion:
@@ -622,6 +640,7 @@ class TestAdminOperations:
         
         # Act
         result = await get_admin_stats(
+            user_id=str(uuid.uuid4()),
             db_manager=mock_db_manager
         )
         
@@ -645,6 +664,7 @@ class TestAdminOperations:
         # Act & Assert
         with pytest.raises(HTTPException) as exc_info:
             await get_admin_stats(
+                user_id=str(uuid.uuid4()),
                 db_manager=mock_db_manager
             )
         
@@ -755,6 +775,7 @@ class TestSessionsIntegration:
         create_request = SessionCreateRequest(
             user_id=user_id,
             expires_in_hours=24,
+            temp_collection_name="test_full_collection",
             metadata={"purpose": "testing"}
         )
         
@@ -780,7 +801,12 @@ class TestSessionsIntegration:
         updated_session_data["status"] = "paused"
         mock_db_manager.update_session.return_value = {"session": updated_session_data}
         
-        update_request = SessionUpdateRequest(status="paused")
+        update_request = SessionUpdateRequest(
+            status="paused",
+            metadata=None,
+            temp_collection_name=None,
+            extend_hours=None
+        )
         
         updated_session = await update_session(
             session_id=session_id,

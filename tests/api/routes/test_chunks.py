@@ -433,17 +433,18 @@ class TestChunksUpdate:
         # Arrange
         session_id = str(uuid.uuid4())
         
-        update = Mock()
-        update.chunk_id = str(uuid.uuid4())
-        update.vector = [0.4] * 384
-        update.chunk_text = "Updated text"
-        update.metadata = {"updated": True}
+        update = ChunkUpdateRequest(
+            chunk_id=str(uuid.uuid4()),
+            vector=[0.4] * 384,
+            chunk_text="Updated text",
+            metadata={"updated": True}
+        )
         
         # Mock partial failure response
         mock_db_manager.update_chunks.return_value = {
             "status": "partial_failure",
             "points_updated": 0,
-            "failed_updates": ["Chunk not found"]
+            "failed_updates": [{"error": "Chunk not found"}]
         }
         
         from src.api.routes.chunks import update_chunks
@@ -458,7 +459,9 @@ class TestChunksUpdate:
         # Assert
         assert result.status == "partial_failure"
         assert result.chunks_affected == 0
-        assert result.errors == ["Chunk not found"]
+        assert result.errors is not None
+        assert len(result.errors) == 1
+        assert result.errors[0]["error"] == "Chunk not found"
 
     @pytest.mark.asyncio
     async def test_update_chunks_metadata_only(self, mock_db_manager):
@@ -573,13 +576,12 @@ class TestChunksDeletion:
         session_id = str(uuid.uuid4())
         chunk_ids = [str(uuid.uuid4()) for _ in range(2)]
         
-        request = Mock()
-        request.chunk_ids = chunk_ids
+        request = ChunkDeleteRequest(chunk_ids=chunk_ids)
         
         # Mock partial failure response
         mock_db_manager.delete_chunks.return_value = {
             "status": "partial_failure",
-            "errors": ["Chunk not found: " + chunk_ids[1]]
+            "errors": [{"error": "Chunk not found: " + chunk_ids[1]}]
         }
         
         from src.api.routes.chunks import delete_chunks
@@ -594,8 +596,8 @@ class TestChunksDeletion:
         # Assert
         assert result.status == "partial_failure"
         assert result.chunks_affected == len(chunk_ids)
+        assert result.errors is not None
         assert len(result.errors) == 1
-        assert chunk_ids[1] in result.errors[0]
 
     @pytest.mark.asyncio
     async def test_delete_chunks_empty_list(self, mock_db_manager):

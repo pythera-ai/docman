@@ -34,7 +34,8 @@ def client():
 @pytest_asyncio.fixture
 async def async_client():
     """Create an AsyncClient instance for async testing."""
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    from httpx import AsyncClient
+    async with AsyncClient(base_url="http://test") as ac:
         yield ac
 
 
@@ -59,11 +60,17 @@ def mock_db_manager():
     mock_manager.get_user_sessions = AsyncMock()
     mock_manager.expire_old_sessions = AsyncMock()
     mock_manager.get_session_documents = AsyncMock()
+    # Mock other database operations
     mock_manager.create_document = AsyncMock()
     mock_manager.get_document = AsyncMock()
     mock_manager.update_document = AsyncMock()
     mock_manager.delete_document = AsyncMock()
+    mock_manager.get_session = AsyncMock()
+    mock_manager.search_documents = AsyncMock()
     mock_manager.download_document = AsyncMock()
+    mock_manager.create_session = AsyncMock()
+    mock_manager.update_session = AsyncMock()
+    mock_manager.delete_session = AsyncMock()
     mock_manager.create_chunks = AsyncMock()
     mock_manager.get_chunks = AsyncMock()
     mock_manager.update_chunks = AsyncMock()
@@ -71,10 +78,14 @@ def mock_db_manager():
     
     # Mock MinIO client
     mock_manager.minio_client = Mock()
-    mock_manager.minio_client.validate_file_request = Mock()
+    mock_manager.minio_client.insert = Mock()
+    mock_manager.minio_client.update = Mock()
+    mock_manager.minio_client.delete = Mock()
     mock_manager.minio_client.search = Mock()
-    mock_manager.minio_client.check_duplicate = Mock()
+    mock_manager.minio_client.get_file = Mock()
     mock_manager.minio_client.get_document_info = Mock()
+    mock_manager.minio_client.check_duplicate = Mock()
+    mock_manager.minio_client.create_bucket = Mock()
     
     return mock_manager
 
@@ -90,7 +101,7 @@ def sample_session_data():
         "user_id": user_id,
         "status": "active",
         "created_at": datetime.utcnow(),
-        "expires_at": datetime.utcnow() + timedelta(hours=24),
+        "expires_at": (datetime.utcnow() + timedelta(hours=24)).isoformat() + 'Z',
         "updated_at": datetime.utcnow(),
         "metadata": {"purpose": "testing"},
         "temp_collection_name": f"temp_{session_id[:8]}"
@@ -166,8 +177,7 @@ def sample_upload_file():
     return UploadFile(
         filename="test_document.txt",
         file=file_obj,
-        size=len(file_content),
-        headers={"content-type": "text/plain"}
+        size=len(file_content)
     )
 
 
