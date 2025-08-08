@@ -170,6 +170,8 @@ async def download_document(
             status_code=503,
             detail=f"Database connection error: {e.message}"
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -296,7 +298,7 @@ async def list_documents(
         search_params = {
             "bucket_name": config.minio.default_bucket,
             "include_metadata": include_metadata,
-            "max_results": limit + offset  # Get more to handle offset
+            "max_results": int(limit) + int(offset)  # Get more to handle offset
         }
         
         if filename_pattern:
@@ -317,7 +319,7 @@ async def list_documents(
         
         # Apply offset and limit
         total_found = len(documents)
-        paginated_documents = documents[offset:offset + limit]
+        paginated_documents = documents[int(offset):int(offset) + int(limit)]
         
         return {
             "documents": paginated_documents,
