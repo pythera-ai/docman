@@ -6,11 +6,12 @@ A comprehensive document management system built with FastAPI that provides docu
 
 - **Document Upload & Processing**: Upload documents with automatic chunking and metadata extraction
 - **Session Management**: Create and manage document sessions with user isolation
-- **Vector Search**: Document search capabilities using Qdrant vector database (planned)
+- **Chunks Management**: Process, search, and manage document chunks with vector capabilities
 - **Multiple Storage Backends**: MinIO for file storage, PostgreSQL for metadata, Qdrant for vectors
-- **Health Monitoring**: Built-in health checks and metrics collection
-- **RESTful API**: Comprehensive API with automatic documentation
+- **Health Monitoring**: Built-in health checks, metrics collection, and system status monitoring
+- **RESTful API**: Comprehensive API with automatic documentation and OpenAPI support
 - **Administrative Tools**: Session cleanup, statistics, and management endpoints
+- **Testing Suite**: Comprehensive test coverage with unit, integration, and API tests
 
 ## 🏗️ Architecture
 
@@ -30,22 +31,29 @@ docman/
 │   ├── api/                    # FastAPI application
 │   │   ├── routes/            # API route handlers
 │   │   │   ├── documents.py   # Document management endpoints
-│   │   │   ├── management.py  # Session and admin endpoints
-│   │   │   ├── search.py      # Search endpoints
-│   │   │   └── health.py      # Health check endpoints
+│   │   │   ├── sessions.py    # Session management endpoints
+│   │   │   ├── chunks.py      # Document chunks endpoints
+│   │   │   └── health.py      # Health monitoring endpoints
 │   │   ├── services/          # Business logic services
+│   │   │   └── database_manager.py  # Unified database manager
+│   │   ├── dependencies.py    # FastAPI dependencies
 │   │   └── main.py           # FastAPI application entry point
 │   ├── core/                  # Core application logic
 │   │   ├── config.py         # Configuration management
 │   │   ├── models.py         # Pydantic models
 │   │   ├── exceptions.py     # Custom exceptions
+│   │   ├── metrics.py        # Performance metrics
 │   │   └── utils.py          # Utility functions
 │   └── db/                    # Database interfaces
 │       ├── interface.py      # Database interface definitions
 │       ├── postgres_db.py    # PostgreSQL implementation
 │       ├── minio_db.py       # MinIO implementation
 │       └── qdrant_db.py      # Qdrant implementation
-├── tests/                     # Test suite
+├── tests/                     # Comprehensive test suite
+│   ├── api/                   # API endpoint tests
+│   │   ├── routes/           # Route-specific tests
+│   │   └── test_integration.py  # Integration tests
+│   └── conftest.py           # Test configuration
 ├── docs/                      # Documentation
 ├── docker-compose.yaml        # Docker services configuration
 ├── Dockerfile                 # Application container
@@ -123,35 +131,48 @@ The application uses environment variables for configuration. Key settings inclu
 
 ### Application Settings
 - `MAX_FILE_SIZE`: Maximum upload file size (default: 50MB)
-- `ALLOWED_EXTENSIONS`: Supported file types (pdf, docx, txt, md, rtf)
+- `MAX_DOCUMENTS_PER_REQUEST`: Maximum documents per batch operation
+- `ALLOWED_EXTENSIONS`: Supported file types (pdf, docx, txt, md, rtf, html)
 - `ENVIRONMENT`: Application environment (development/production)
+- `DEBUG`: Enable debug mode and detailed error responses
 
 ## 📚 API Documentation
 
 ### Core Endpoints
 
 #### Document Management
-- `POST /documents/session/{session_id}/upload` - Upload document to session
-- `POST /documents/session/{session_id}/process` - Process document into chunks
-- `GET /documents/session/{session_id}/documents` - List session documents
-- `GET /documents/{document_id}/download` - Download document
-- `DELETE /documents/{document_id}` - Delete document
+- `POST /api/v1/documents/session/{session_id}/upload` - Upload document to session
+- `GET /api/v1/documents/` - List all documents with filtering options
+- `GET /api/v1/documents/{document_id}/download` - Download document file
+- `GET /api/v1/documents/{document_id}/info` - Get document information
+- `GET /api/v1/documents/{document_id}/metadata` - Get document metadata
+- `PUT /api/v1/documents/{document_id}/metadata` - Update document metadata
+- `DELETE /api/v1/documents/{document_id}` - Delete document
+- `GET /api/v1/documents/check-duplicate/{file_hash}` - Check for duplicate documents
 
 #### Session Management
-- `POST /management/sessions` - Create new session
-- `GET /management/sessions/{session_id}` - Get session details
-- `PUT /management/sessions/{session_id}` - Update session
-- `DELETE /management/sessions/{session_id}` - Delete session
-- `GET /management/users/{user_id}/sessions` - Get user sessions
+- `POST /api/v1/sessions/` - Create new session
+- `GET /api/v1/sessions/{session_id}` - Get session details
+- `GET /api/v1/sessions/users/{user_id}` - Get user sessions
+- `PUT /api/v1/sessions/{session_id}` - Update session (extend, modify metadata)
+- `DELETE /api/v1/sessions/{session_id}` - Delete session
+- `POST /api/v1/sessions/expire` - Expire old sessions
+- `GET /api/v1/sessions/{session_id}/documents` - Get session documents
+- `GET /api/v1/sessions/admin/stats` - Get system statistics (admin)
+- `POST /api/v1/sessions/admin/cleanup` - Perform system cleanup (admin)
 
-#### Search (Planned)
-- `POST /search/session/{session_id}/search` - Search within session
-- `POST /search/search` - Global search across documents
+#### Chunks Management
+- `POST /api/v1/chunks/session/{session_id}/chunks` - Upload chunks to session
+- `POST /api/v1/chunks/session/{session_id}/search` - Search chunks within session
+- `PUT /api/v1/chunks/session/{session_id}/chunks` - Update chunks in session
+- `DELETE /api/v1/chunks/session/{session_id}/chunks` - Delete chunks from session
 
 #### Health & Monitoring
-- `GET /health` - Application health status
-- `GET /health/detailed` - Detailed health information
-- `GET /management/stats` - System statistics
+- `GET /api/v1/health/` - Basic application health status
+- `GET /api/v1/health/detailed` - Detailed health information with component status
+- `GET /api/v1/health/databases` - Database connectivity status
+- `GET /api/v1/health/metrics` - System metrics and performance data
+- `GET /api/v1/health/status/{component}` - Individual component status
 
 ### API Documentation URLs
 
@@ -159,42 +180,58 @@ Once the application is running:
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 - **API Info**: http://localhost:8000/api/v1/info
+- **Root API**: http://localhost:8000/
 
 ## 🗄️ Database Schema
 
 ### PostgreSQL Tables
-- **document_metadata**: Document information and metadata
-- **sessions**: User session management
-- **chunks**: Document chunk information
+- **document_metadata**: Document information, metadata, and session associations
+- **sessions**: User session management with expiration and metadata
+- **chunks**: Document chunk information with vector embeddings support
 
 ### MinIO Buckets
-- **documents**: Primary document storage bucket
+- **documents**: Primary document storage bucket with versioning support
 
 ### Qdrant Collections
-- **document_chunks**: Vector embeddings for semantic search
+- **document_chunks**: Vector embeddings for semantic search and similarity matching
 
 ## 🧪 Testing
 
-Run the test suite:
+The project includes a comprehensive test suite with 90+ test cases covering all API endpoints and core functionality.
 
 ```bash
 # Run all tests
 python -m pytest tests/
 
-# Run specific test files
-python -m pytest tests/test_document_management.py
-python -m pytest tests/test_session_management.py
-python -m pytest tests/test_health_checks.py
+# Run specific test categories
+python -m pytest tests/api/routes/test_documents.py    # Document API tests
+python -m pytest tests/api/routes/test_sessions.py     # Session API tests  
+python -m pytest tests/api/routes/test_chunks.py       # Chunks API tests
+python -m pytest tests/api/routes/test_health.py       # Health monitoring tests
+python -m pytest tests/api/test_integration.py         # Integration tests
 
 # Run with coverage
-python -m pytest tests/ --cov=src/
+python -m pytest tests/ --cov=src/ --cov-report=html
+
+# Run specific test patterns
+python -m pytest tests/ -k "upload"                    # All upload-related tests
+python -m pytest tests/ -v                             # Verbose output
 ```
 
 ### Test Categories
-- **Unit Tests**: Individual component testing
-- **Integration Tests**: Database and service integration
-- **API Tests**: Endpoint functionality testing
-- **Health Tests**: System health verification
+- **API Tests**: Complete endpoint testing with FastAPI TestClient
+- **Unit Tests**: Individual component and function testing
+- **Integration Tests**: Cross-service functionality and workflows
+- **Health Tests**: System health and monitoring verification
+- **Database Tests**: Database operations and connectivity
+
+### Test Coverage
+- ✅ **Document Management**: Upload, download, metadata, deletion
+- ✅ **Session Management**: CRUD operations, expiration, user sessions
+- ✅ **Chunks Management**: Upload, search, update, delete operations
+- ✅ **Health Monitoring**: Health checks, metrics, component status
+- ✅ **Error Handling**: Exception cases and edge conditions
+- ✅ **Database Integration**: PostgreSQL, MinIO, and Qdrant operations
 
 ## 🚀 Deployment
 
@@ -220,20 +257,41 @@ python -m pytest tests/ --cov=src/
 
 ## 📊 Monitoring & Health
 
-The application includes built-in monitoring:
+The application includes comprehensive monitoring and observability:
 
-- **Health Checks**: Database connectivity and service status
-- **Metrics Collection**: Request timing and system metrics
-- **Logging**: Structured logging with configurable levels
-- **Administrative Endpoints**: System statistics and cleanup tools
+### Health Checks
+- **Basic Health**: `/api/v1/health/` - Application status and uptime
+- **Detailed Health**: `/api/v1/health/detailed` - Component-level health status
+- **Database Health**: `/api/v1/health/databases` - Database connectivity status
+- **Component Status**: `/api/v1/health/status/{component}` - Individual component monitoring
+
+### Metrics & Monitoring
+- **Performance Metrics**: Request timing, throughput, and response times
+- **System Metrics**: Memory usage, disk space, and resource utilization
+- **Database Metrics**: Connection pool status, query performance
+- **API Metrics**: Endpoint usage statistics and error rates
+
+### Administrative Tools
+- **System Statistics**: `/api/v1/sessions/admin/stats` - Comprehensive system overview
+- **Cleanup Operations**: `/api/v1/sessions/admin/cleanup` - Automated maintenance tasks
+- **Session Management**: Bulk session operations and expiration handling
+
+### Logging & Observability
+- **Structured Logging**: JSON-formatted logs with request correlation
+- **Error Tracking**: Comprehensive exception logging and stack traces
+- **Performance Tracking**: Request timing and database operation metrics
+- **Audit Logging**: User actions and system events tracking
 
 ## 🔒 Security
 
-- Input validation using Pydantic models
-- File type restrictions and size limits
-- SQL injection prevention through parameterized queries
-- CORS configuration for web integration
-- Environment-based configuration for sensitive data
+- **Input Validation**: Comprehensive validation using Pydantic models and FastAPI
+- **File Security**: File type restrictions, size limits, and content validation
+- **Database Security**: SQL injection prevention through parameterized queries and ORM
+- **CORS Configuration**: Configurable CORS settings for web integration
+- **Environment Security**: Environment-based configuration for sensitive credentials
+- **Error Handling**: Sanitized error responses to prevent information disclosure
+- **Request Validation**: Schema validation for all API endpoints
+- **Session Security**: Secure session management with expiration and cleanup
 
 ## 🤝 Contributing
 
@@ -245,10 +303,13 @@ The application includes built-in monitoring:
 
 ### Development Guidelines
 
-- Follow PEP 8 style guidelines
-- Write comprehensive tests for new features
-- Update documentation as needed
-- Use type hints throughout the codebase
+- Follow PEP 8 style guidelines and type hints throughout
+- Write comprehensive tests for new features (maintain 90+ test coverage)
+- Update documentation and API specs as needed
+- Use async/await patterns for database operations
+- Implement proper error handling with custom exceptions
+- Add logging and metrics for new endpoints
+- Follow the existing project structure and patterns
 
 ## 📝 License
 
@@ -256,23 +317,31 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🔮 Roadmap
 
-### Current Features (v1.0)
-- ✅ Document upload and storage
-- ✅ Session management
-- ✅ Health monitoring
-- ✅ Administrative tools
+### Current Features (v1.0) ✅
+- ✅ Document upload, storage, and management
+- ✅ Session management with user isolation
+- ✅ Chunks processing and management
+- ✅ Health monitoring and metrics collection
+- ✅ Administrative tools and cleanup operations
+- ✅ Comprehensive API documentation
+- ✅ Complete test suite coverage (90+ tests)
+- ✅ MinIO, PostgreSQL, and Qdrant integration
 
-### Upcoming Features (v1.1)
-- 🔄 Vector search implementation
-- 🔄 Document text extraction
-- 🔄 Advanced search filters
-- 🔄 User authentication
+### Upcoming Features (v1.1) 🔄
+- 🔄 Advanced vector search implementation
+- 🔄 Document text extraction and OCR
+- 🔄 Advanced search filters and faceting
+- 🔄 User authentication and authorization
+- 🔄 API rate limiting and quotas
+- 🔄 Bulk operations optimization
 
-### Future Enhancements (v2.0)
-- 📋 Document versioning
-- 📋 Advanced analytics
-- 📋 Real-time notifications
-- 📋 Multi-tenant support
+### Future Enhancements (v2.0) 📋
+- 📋 Document versioning and history
+- 📋 Advanced analytics and reporting
+- 📋 Real-time notifications and webhooks
+- 📋 Multi-tenant support with isolation
+- 📋 Advanced caching strategies
+- 📋 Machine learning-based features
 
 ## 📞 Support
 
@@ -284,11 +353,13 @@ For questions, issues, or contributions:
 
 ## 🙏 Acknowledgments
 
-- FastAPI for the excellent web framework
-- Qdrant for vector database capabilities
-- MinIO for object storage
-- PostgreSQL for reliable data storage
-- Docker for containerization support
+- **FastAPI** for the excellent async web framework and automatic API documentation
+- **Qdrant** for high-performance vector database capabilities
+- **MinIO** for scalable object storage solution
+- **PostgreSQL** for reliable relational data storage
+- **Docker** for containerization and development environment
+- **Pydantic** for data validation and serialization
+- **Pytest** for comprehensive testing framework
 
 ---
 
