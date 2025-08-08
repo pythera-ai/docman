@@ -380,6 +380,7 @@ async def get_session_documents(
 
 @router.get("/admin/stats", response_model=AdminStatsResponse)
 async def get_admin_stats(
+    user_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> AdminStatsResponse:
     """
@@ -408,11 +409,11 @@ async def get_admin_stats(
         
         try:
             # Get session statistics by querying for different statuses
-            all_sessions_result = await db_manager.get_user_sessions("", limit=1000)  # Get all sessions
+            all_sessions_result = await db_manager.get_user_sessions(user_id, limit=1000)  # Get all sessions
             if not all_sessions_result.get("error"):
                 total_sessions = all_sessions_result.get("total_found", 0)
             
-            active_sessions_result = await db_manager.get_user_sessions("", status="active", limit=1000)
+            active_sessions_result = await db_manager.get_user_sessions(user_id, status="active", limit=1000)
             if not active_sessions_result.get("error"):
                 active_sessions = active_sessions_result.get("total_found", 0)
                 
