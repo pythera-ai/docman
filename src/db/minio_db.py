@@ -444,7 +444,7 @@ class MinioDB(InterfaceDatabase):
                     metadata = stat.metadata or {}
                     
                     # Apply filename pattern filter if specified
-                    original_filename = metadata.get('original_filename', 'unknown')
+                    original_filename = metadata.get('x-amz-meta-original_filename', 'unknown')
                     if filename_pattern and filename_pattern.lower() not in original_filename.lower():
                         # No match found
                         pass
@@ -468,7 +468,6 @@ class MinioDB(InterfaceDatabase):
                                 'content_type': stat.content_type,
                                 'upload_time': metadata.get('upload_time'),
                                 'file_hash': metadata.get('file_hash'),
-                                'metadata': metadata
                             })
                         
                         documents.append(document_info)
@@ -495,7 +494,7 @@ class MinioDB(InterfaceDatabase):
                         try:
                             stat = self._client.stat_object(bucket_name, obj.object_name)
                             metadata = stat.metadata or {}
-                            original_filename = metadata.get('original_filename', 'unknown')
+                            original_filename = metadata.get('x-amz-meta-original_filename', 'unknown')
                         except:
                             pass
                     
@@ -523,7 +522,6 @@ class MinioDB(InterfaceDatabase):
                             'content_type': getattr(stat, 'content_type', None) if 'stat' in locals() else None,
                             'upload_time': metadata.get('upload_time'),
                             'file_hash': metadata.get('file_hash'),
-                            'metadata': metadata
                         })
                     
                     documents.append(document_info)
@@ -634,69 +632,6 @@ class MinioDB(InterfaceDatabase):
         except Exception as e:
             logging.error(f"Error checking duplicate for hash {file_hash}: {e}")
             return None
-    
-    @staticmethod
-    def validate_file_request(files_data: List[dict], max_files: int = 10) -> dict:
-        """
-        Validate file upload request according to FR002 specifications.
-        
-        Args:
-            files_data: List of file data dictionaries
-            max_files: Maximum number of files allowed per request
-            
-        Returns:
-            Dictionary with validation results
-        """
-        validation_errors = []
-        valid_files = []
-        
-        # Check max files limit
-        if len(files_data) > max_files:
-            return {
-                'valid': False,
-                'error': f'Too many files. Maximum {max_files} files allowed per request',
-                'valid_files': [],
-                'validation_errors': []
-            }
-        
-        allowed_extensions = ['pdf', 'docx', 'txt', 'md', 'rtf']
-        max_size = 50 * 1024 * 1024  # 50MB
-        
-        for i, file_data in enumerate(files_data):
-            filename = file_data.get('filename', f'file_{i}')
-            file_size = file_data.get('file_size', 0)
-            
-            file_errors = []
-            
-            # Check required fields
-            if not file_data.get('file_data'):
-                file_errors.append('Missing file_data')
-            if not filename:
-                file_errors.append('Missing filename')
-            
-            # Check file extension
-            if filename:
-                file_extension = filename.lower().split('.')[-1] if '.' in filename else ''
-                if file_extension not in allowed_extensions:
-                    file_errors.append(f'Invalid file type. Allowed: {allowed_extensions}')
-            
-            # Check file size
-            if file_size > max_size:
-                file_errors.append(f'File too large. Maximum size: {max_size} bytes')
-            
-            if file_errors:
-                validation_errors.append({
-                    'filename': filename,
-                    'errors': file_errors
-                })
-            else:
-                valid_files.append(file_data)
-        
-        return {
-            'valid': len(validation_errors) == 0,
-            'valid_files': valid_files,
-            'validation_errors': validation_errors
-        }
     
     def delete_bucket(self, bucket_name: str, force: bool = False) -> dict:
         """

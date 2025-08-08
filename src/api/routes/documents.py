@@ -262,6 +262,7 @@ async def update_document_metadata(
 
 @router.get("/", response_model=Dict[str, Any])
 async def list_documents(
+    document_id: Optional[str] = Query(None, description="Filter by document id"),
     filename_pattern: Optional[str] = Query(None, description="Filter by filename pattern"),
     include_metadata: bool = Query(True, description="Include detailed metadata"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of documents to return"),
@@ -300,6 +301,9 @@ async def list_documents(
         
         if filename_pattern:
             search_params["filename_pattern"] = filename_pattern
+
+        if document_id:
+            search_params["document_id"] = document_id
         
         result = db_manager.minio_client.search(**search_params)
         
