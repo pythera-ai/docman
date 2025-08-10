@@ -1,0 +1,1388 @@
+import os
+import logging
+import json
+import uuid
+import time
+from datetime import datetime
+from typing import Optional, List, Any, Dict
+from dataclasses import dataclass
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor, Json
+    from psycopg2 import sql
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    POSTGRES_AVAILABLE = False
+    psycopg2 = None
+    RealDictCursor = None
+    Json = None
+
+from .interface import InterfaceDatabase
+
+
+@dataclass
+class DocumentRecord:
+    """Document record structure matching the database schema"""
+    document_id: str
+    user_id: str
+    filename: str
+    file_type: str
+    file_size: int
+    minio_path: str
+    processing_status: str = 'pending'
+    chunks_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    metadata: Optional[Dict] = None
+
+
+@dataclass
+class SessionRecord:
+    """Session record structure matching the sessions table schema"""
+    session_id: str
+    user_id: str
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    status: str = 'active'
+    metadata: Optional[Dict] = None
+    temp_collection_name: Optional[str] = None
+
+
+class PostgresDB(InterfaceDatabase):
+    """
+    PostgreSQL database implementation for storing document metadata.
+    Works with MinIO for file storage and provides metadata management.
+    """
+    
+    def __init__(
+        self,
+        host: Optional[str] = None,
+        port: int = 5432,
+        database: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+        **kwargs
+    ) -> None:
+        if not POSTGRES_AVAILABLE:
+            raise ImportError("psycopg2 package is not installed. Please install it with: pip install psycopg2-binary")
+        
+        self.connection_params = {
+            'host': host,
+            'port': port,
+            'database': database,
+            'user': user,
+            'password': password
+        }
+        self.connection_params.update(kwargs)
+        self._connection = None
+        self._connect()
+    
+    def connect_client(self, url, **kwargs) -> Any:
+        """Connect to PostgreSQL database"""
+        if not POSTGRES_AVAILABLE:
+            return None
+            
+        try:
+            # Parse connection parameters
+            host = kwargs.get('host') or url
+            port = kwargs.get('port', 5432)
+            database = kwargs.get('database')
+            user = kwargs.get('user')
+            password = kwargs.get('password')
+            
+            if not all([host, database, user, password]):
+                logging.error("Missing required PostgreSQL connection parameters")
+                return None
+            
+            if psycopg2 is None:
+                raise ImportError("psycopg2 not available")
+                
+            connection = psycopg2.connect(
+                host=host,
+                port=port,
+                database=database,
+                user=user,
+                password=password
+            )
+            
+            # Test connection
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                
+            logging.info(f"Successfully connected to PostgreSQL at {host}:{port}")
+            return connection
+            
+        except Exception as e:
+            logging.error(f"Failed to connect to PostgreSQL: {e}")
+            return None
+    
+    def _connect(self) -> bool:
+        """Establish database connection"""
+        if not POSTGRES_AVAILABLE or psycopg2 is None:
+            return False
+            
+        try:
+            self._connection = psycopg2.connect(**self.connection_params)
+            # Initialize tables after successful connection
+            self._create_tables()
+            return True
+        except Exception as e:
+            logging.error(f"Database connection failed: {e}")
+            return False
+    
+    def _check_connection(self) -> bool:
+        """Check if database connection is active"""
+        if not POSTGRES_AVAILABLE or self._connection is None:
+            return self._connect()
+        
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+            return True
+        except:
+            return self._connect()
+    
+    def _create_tables(self) -> bool:
+        """Create required database tables if they don't exist"""
+        if not self._connection:
+            return False
+        
+        try:
+            with self._connection.cursor() as cursor:
+                # Create documents table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS documents (
+                        document_id VARCHAR(255) PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        filename VARCHAR(500) NOT NULL,
+                        file_type VARCHAR(50),
+                        file_size BIGINT NOT NULL,
+                        minio_path TEXT NOT NULL,
+                        processing_status VARCHAR(50) DEFAULT 'pending',
+                        chunks_count INTEGER DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        metadata JSONB
+                    )
+                ''')
+                
+                # Create sessions table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        user_id VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        expires_at TIMESTAMP NOT NULL,
+                        status VARCHAR(20) DEFAULT 'active',
+                        metadata JSONB,
+                        temp_collection_name VARCHAR(255)
+                    )
+                ''')
+                
+                # Create indexes for better performance
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_documents_user_id 
+                    ON documents(user_id)
+                ''')
+                
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_documents_created_at 
+                    ON documents(created_at)
+                ''')
+                
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_sessions_user_id 
+                    ON sessions(user_id)
+                ''')
+                
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at 
+                    ON sessions(expires_at)
+                ''')
+                
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_sessions_status 
+                    ON sessions(status)
+                ''')
+                
+                self._connection.commit()
+                logging.info("✅ Database tables created successfully")
+                return True
+                
+        except Exception as e:
+            logging.error(f"Failed to create database tables: {e}")
+            if self._connection:
+                self._connection.rollback()
+            return False
+    
+    def insert(self, points: List[Any], **kwargs) -> dict:
+        """
+        Insert document metadata into PostgreSQL following FR002 specifications.
+        
+        Args:
+            points: List of document dictionaries containing:
+                - document_id: str - unique document identifier  
+                - user_id: str - user who owns the document
+                - filename: str - original filename
+                - file_size: int - file size in bytes
+                - file_url: str - MinIO file URL
+                - file_type: str - file extension (optional)
+                - processing_status: str - current status (optional)
+                - chunks_count: int - number of chunks (optional)
+                - metadata: dict - additional metadata (optional)
+        
+        Returns:
+            dict: Response following FR002 format with documents array and processing info
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'documents': [],
+                'total_processed': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        documents = []
+        failed_inserts = []
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                for point in points:
+                    try:
+                        # Extract fields from input
+                        document_id = point.get('document_id')
+                        user_id = point.get('user_id')
+                        filename = point.get('filename')
+                        file_size = point.get('file_size', 0)
+                        file_url = point.get('file_url')
+                        file_type = point.get('file_type')
+                        processing_status = point.get('processing_status', 'pending')
+                        chunks_count = point.get('chunks_count', 0)
+                        metadata = point.get('metadata', {})
+                        
+                        # Validate required fields
+                        if not all([document_id, user_id, filename, file_url]):
+                            failed_inserts.append({
+                                'filename': filename or 'unknown',
+                                'error': 'Missing required fields: document_id, user_id, filename, or file_url'
+                            })
+                            continue
+                        
+                        # Extract file type from filename if not provided
+                        if not file_type and '.' in filename:
+                            file_type = filename.split('.')[-1].lower()
+                        
+                        # Use file_url as minio_path
+                        minio_path = file_url
+                        
+                        # Validate UUID format
+                        try:
+                            uuid.UUID(document_id)
+                            uuid.UUID(user_id)
+                        except ValueError as e:
+                            failed_inserts.append({
+                                'filename': filename,
+                                'error': f'Invalid UUID format: {str(e)}'
+                            })
+                            continue
+                        
+                        # Insert document record
+                        insert_query = """
+                            INSERT INTO documents (
+                                document_id, user_id, filename, file_type, file_size, 
+                                minio_path, processing_status, chunks_count, metadata
+                            ) VALUES (
+                                %s, %s, %s, %s, %s, %s, %s, %s, %s
+                            ) RETURNING *
+                        """
+                        
+                        cursor.execute(insert_query, (
+                            document_id,
+                            user_id,
+                            filename,
+                            file_type,
+                            file_size,
+                            minio_path,
+                            processing_status,
+                            chunks_count,
+                            Json(metadata) if metadata and Json else json.dumps(metadata) if metadata else None
+                        ))
+                        
+                        # Get the inserted record
+                        record = cursor.fetchone()
+                        
+                        # Format response according to FR002
+                        documents.append({
+                            'document_id': str(record['document_id']),
+                            'filename': record['filename'],
+                            'file_size': record['file_size'],
+                            'chunks_count': record['chunks_count'],
+                            'processing_status': record['processing_status'],
+                            'file_url': record['minio_path']
+                        })
+                        
+                    except Exception as e:
+                        failed_inserts.append({
+                            'filename': point.get('filename', 'unknown'),
+                            'error': f'Insert error: {str(e)}'
+                        })
+                
+                # Commit the transaction
+                if self._connection:
+                    self._connection.commit()
+                
+        except Exception as e:
+            # Rollback on error
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'documents': [],
+                'total_processed': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Database error: {str(e)}'
+            }
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        response = {
+            'documents': documents,
+            'total_processed': len(documents),
+            'processing_time_ms': processing_time
+        }
+        
+        if failed_inserts:
+            response['failed_inserts'] = failed_inserts
+        
+        return response
+    
+    def update(self, points: List[Any], **kwargs) -> dict:
+        """
+        Update document metadata in PostgreSQL.
+        
+        Args:
+            points: List of document update dictionaries containing:
+                - document_id: str - document identifier
+                - processing_status: str - new processing status (optional)
+                - chunks_count: int - new chunks count (optional)
+                - filename: str - new filename (optional)
+                - metadata: dict - metadata to merge (optional)
+        
+        Returns:
+            dict: Response with updated documents info
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'documents': [],
+                'total_processed': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        updated_documents = []
+        failed_updates = []
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                for point in points:
+                    try:
+                        document_id = point.get('document_id')
+                        
+                        if not document_id:
+                            failed_updates.append({
+                                'document_id': 'unknown',
+                                'error': 'Missing document_id for update'
+                            })
+                            continue
+                        
+                        # Build dynamic update query
+                        update_fields = []
+                        update_values = []
+                        
+                        if 'processing_status' in point:
+                            update_fields.append('processing_status = %s')
+                            update_values.append(point['processing_status'])
+                        
+                        if 'chunks_count' in point:
+                            update_fields.append('chunks_count = %s')
+                            update_values.append(point['chunks_count'])
+                        
+                        if 'filename' in point:
+                            update_fields.append('filename = %s')
+                            update_values.append(point['filename'])
+                        
+                        if 'metadata' in point:
+                            # Get existing metadata first
+                            cursor.execute(
+                                "SELECT metadata FROM documents WHERE document_id = %s",
+                                (document_id,)
+                            )
+                            result = cursor.fetchone()
+                            if result:
+                                existing_metadata = result['metadata'] or {}
+                                # Merge metadata
+                                merged_metadata = {**existing_metadata, **point['metadata']}
+                                update_fields.append('metadata = %s')
+                                update_values.append(Json(merged_metadata) if Json else json.dumps(merged_metadata))
+                        
+                        # Always update the updated_at timestamp
+                        update_fields.append('updated_at = CURRENT_TIMESTAMP')
+                        
+                        if not update_fields:
+                            failed_updates.append({
+                                'document_id': document_id,
+                                'error': 'No fields to update'
+                            })
+                            continue
+                        
+                        # Add document_id for WHERE clause
+                        update_values.append(document_id)
+                        
+                        # Execute update
+                        update_query = f"""
+                            UPDATE documents 
+                            SET {', '.join(update_fields)}
+                            WHERE document_id = %s
+                            RETURNING *
+                        """
+                        
+                        cursor.execute(update_query, update_values)
+                        record = cursor.fetchone()
+                        
+                        if record:
+                            updated_documents.append({
+                                'document_id': str(record['document_id']),
+                                'filename': record['filename'],
+                                'file_size': record['file_size'],
+                                'chunks_count': record['chunks_count'],
+                                'processing_status': record['processing_status'],
+                                'file_url': record['minio_path']
+                            })
+                        else:
+                            failed_updates.append({
+                                'document_id': document_id,
+                                'error': 'Document not found'
+                            })
+                        
+                    except Exception as e:
+                        failed_updates.append({
+                            'document_id': point.get('document_id', 'unknown'),
+                            'error': f'Update error: {str(e)}'
+                        })
+                
+                # Commit the transaction
+                if self._connection:
+                    self._connection.commit()
+                
+        except Exception as e:
+            # Rollback on error
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'documents': [],
+                'total_processed': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Database error: {str(e)}'
+            }
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        response = {
+            'documents': updated_documents,
+            'total_processed': len(updated_documents),
+            'processing_time_ms': processing_time
+        }
+        
+        if failed_updates:
+            response['failed_updates'] = failed_updates
+        
+        return response
+    
+    def delete(self, points_ids: List[str], **kwargs) -> dict:
+        """
+        Delete document metadata from PostgreSQL by document_id.
+        
+        Args:
+            points_ids: List of document_ids to delete
+        
+        Returns:
+            dict: Response with deletion results
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'deleted_documents': [],
+                'total_deleted': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        deleted_documents = []
+        failed_deletions = []
+        
+        if isinstance(points_ids, str):
+            points_ids = [points_ids]
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                for document_id in points_ids:
+                    try:
+                        # Get document info before deletion
+                        cursor.execute(
+                            "SELECT document_id, filename FROM documents WHERE document_id = %s",
+                            (document_id,)
+                        )
+                        record = cursor.fetchone()
+                        
+                        if not record:
+                            failed_deletions.append({
+                                'document_id': document_id,
+                                'error': 'Document not found'
+                            })
+                            continue
+                        
+                        # Delete the document
+                        cursor.execute(
+                            "DELETE FROM documents WHERE document_id = %s",
+                            (document_id,)
+                        )
+                        
+                        if cursor.rowcount > 0:
+                            deleted_documents.append({
+                                'document_id': document_id,
+                                'filename': record['filename'],
+                                'status': 'deleted'
+                            })
+                        else:
+                            failed_deletions.append({
+                                'document_id': document_id,
+                                'error': 'Failed to delete document'
+                            })
+                        
+                    except Exception as e:
+                        failed_deletions.append({
+                            'document_id': document_id,
+                            'error': f'Delete error: {str(e)}'
+                        })
+                
+                # Commit the transaction
+                if self._connection:
+                    self._connection.commit()
+                
+        except Exception as e:
+            # Rollback on error
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'deleted_documents': [],
+                'total_deleted': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Database error: {str(e)}'
+            }
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        response = {
+            'deleted_documents': deleted_documents,
+            'total_deleted': len(deleted_documents),
+            'processing_time_ms': processing_time
+        }
+        
+        if failed_deletions:
+            response['failed_deletions'] = failed_deletions
+        
+        return response
+    
+    def search(self, **kwargs) -> dict:
+        """
+        Search/list documents in PostgreSQL following FR002 format.
+        
+        Args:
+            **kwargs:
+                - document_id: str - specific document ID to search for
+                - user_id: str - filter by user ID
+                - filename_pattern: str - pattern to match filenames (LIKE)
+                - processing_status: str - filter by processing status
+                - file_type: str - filter by file type
+                - limit: int - maximum number of results to return
+                - offset: int - number of results to skip
+                - order_by: str - field to order by (default: created_at)
+                - order_dir: str - order direction (asc/desc, default: desc)
+        
+        Returns:
+            dict: Response with documents array following FR002 format
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'documents': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        # Extract search parameters
+        document_id = kwargs.get('document_id')
+        user_id = kwargs.get('user_id')
+        filename_pattern = kwargs.get('filename_pattern')
+        processing_status = kwargs.get('processing_status')
+        file_type = kwargs.get('file_type')
+        limit = kwargs.get('limit', 100)
+        offset = kwargs.get('offset', 0)
+        order_by = kwargs.get('order_by', 'created_at')
+        order_dir = kwargs.get('order_dir', 'desc').upper()
+        
+        # Validate order direction
+        if order_dir not in ['ASC', 'DESC']:
+            order_dir = 'DESC'
+        
+        documents = []
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Build WHERE conditions
+                where_conditions = []
+                query_params = []
+                
+                if document_id:
+                    where_conditions.append("document_id = %s")
+                    query_params.append(document_id)
+                
+                if user_id:
+                    where_conditions.append("user_id = %s")
+                    query_params.append(user_id)
+                
+                if filename_pattern:
+                    where_conditions.append("filename ILIKE %s")
+                    query_params.append(f"%{filename_pattern}%")
+                
+                if processing_status:
+                    where_conditions.append("processing_status = %s")
+                    query_params.append(processing_status)
+                
+                if file_type:
+                    where_conditions.append("file_type = %s")
+                    query_params.append(file_type)
+                
+                # Build WHERE clause
+                where_clause = ""
+                if where_conditions:
+                    where_clause = "WHERE " + " AND ".join(where_conditions)
+                
+                # Build the query
+                query = f"""
+                    SELECT document_id, user_id, filename, file_type, file_size,
+                           minio_path, processing_status, chunks_count,
+                           created_at, updated_at, metadata
+                    FROM documents
+                    {where_clause}
+                    ORDER BY {order_by} {order_dir}
+                    LIMIT %s OFFSET %s
+                """
+                
+                query_params.extend([limit, offset])
+                
+                # Execute query
+                cursor.execute(query, query_params)
+                records = cursor.fetchall()
+                
+                # Format results
+                for record in records:
+                    documents.append({
+                        'document_id': str(record['document_id']),
+                        'user_id': str(record['user_id']),
+                        'filename': record['filename'],
+                        'file_type': record['file_type'],
+                        'file_size': record['file_size'],
+                        'chunks_count': record['chunks_count'],
+                        'processing_status': record['processing_status'],
+                        'file_url': record['minio_path'],
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'updated_at': record['updated_at'].isoformat() if record['updated_at'] else None,
+                        'metadata': record['metadata'] or {}
+                    })
+                
+                # Get total count for pagination
+                count_query = f"""
+                    SELECT COUNT(*) as total
+                    FROM documents
+                    {where_clause}
+                """
+                
+                cursor.execute(count_query, query_params[:-2])  # Exclude LIMIT and OFFSET
+                total_count = cursor.fetchone()['total']
+                
+        except Exception as e:
+            logging.error(f"Error searching documents: {e}")
+            return {
+                'documents': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': str(e)
+            }
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        return {
+            'documents': documents,
+            'total_found': total_count,
+            'returned_count': len(documents),
+            'limit': limit,
+            'offset': offset,
+            'processing_time_ms': processing_time
+        }
+    
+    def get_document_by_id(self, document_id: str) -> Optional[Dict]:
+        """
+        Get a specific document by ID.
+        
+        Args:
+            document_id: Document ID to retrieve
+            
+        Returns:
+            Document dictionary or None if not found
+        """
+        if not self._check_connection():
+            return None
+        
+        try:
+            if not self._connection:
+                return None
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                cursor.execute(
+                    """
+                    SELECT document_id, user_id, filename, file_type, file_size,
+                           minio_path, processing_status, chunks_count,
+                           created_at, updated_at, metadata
+                    FROM documents
+                    WHERE document_id = %s
+                    """,
+                    (document_id,)
+                )
+                
+                record = cursor.fetchone()
+                if record:
+                    return {
+                        'document_id': str(record['document_id']),
+                        'user_id': str(record['user_id']),
+                        'filename': record['filename'],
+                        'file_type': record['file_type'],
+                        'file_size': record['file_size'],
+                        'chunks_count': record['chunks_count'],
+                        'processing_status': record['processing_status'],
+                        'file_url': record['minio_path'],
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'updated_at': record['updated_at'].isoformat() if record['updated_at'] else None,
+                        'metadata': record['metadata'] or {}
+                    }
+                return None
+                
+        except Exception as e:
+            logging.error(f"Error getting document {document_id}: {e}")
+            return None
+    
+    def get_user_documents(self, user_id: str, limit: int = 100, offset: int = 0) -> Dict:
+        """
+        Get all documents for a specific user.
+        
+        Args:
+            user_id: User ID to get documents for
+            limit: Maximum number of results
+            offset: Number of results to skip
+            
+        Returns:
+            Dictionary with documents and pagination info
+        """
+        return self.search(
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            order_by='created_at',
+            order_dir='desc'
+        )
+    
+    # =============================================
+    # SESSION MANAGEMENT METHODS
+    # =============================================
+    
+    def create_session(self, user_id: str, expires_at: datetime, 
+                      metadata: Optional[Dict] = None, 
+                      temp_collection_name: Optional[str] = None) -> Dict:
+        """
+        Create a new session for a user.
+        
+        Args:
+            user_id: User ID for the session
+            expires_at: When the session expires
+            metadata: Optional session metadata
+            temp_collection_name: Optional temporary collection name
+            
+        Returns:
+            Dict with session information or error
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'session': None,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Generate unique session ID
+                session_id = str(uuid.uuid4())
+                
+                # Insert new session
+                insert_query = """
+                    INSERT INTO sessions (
+                        session_id, user_id, expires_at, metadata, temp_collection_name
+                    ) VALUES (
+                        %s, %s, %s, %s, %s
+                    ) RETURNING *
+                """
+                
+                cursor.execute(insert_query, (
+                    session_id,
+                    user_id,
+                    expires_at,
+                    Json(metadata) if metadata and Json else json.dumps(metadata) if metadata else None,
+                    temp_collection_name
+                ))
+                
+                record = cursor.fetchone()
+                self._connection.commit()
+                
+                processing_time = int((time.time() - start_time) * 1000)
+                
+                return {
+                    'session': {
+                        'session_id': str(record['session_id']),
+                        'user_id': str(record['user_id']),
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'expires_at': record['expires_at'].isoformat() if record['expires_at'] else None,
+                        'status': record['status'],
+                        'metadata': record['metadata'] or {},
+                        'temp_collection_name': record['temp_collection_name']
+                    },
+                    'processing_time_ms': processing_time
+                }
+                
+        except Exception as e:
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'session': None,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Error creating session: {str(e)}'
+            }
+    
+    def get_session(self, session_id: str) -> Optional[Dict]:
+        """
+        Get session information by session ID.
+        
+        Args:
+            session_id: Session ID to retrieve
+            
+        Returns:
+            Session dictionary or None if not found
+        """
+        if not self._check_connection():
+            return None
+        
+        try:
+            if not self._connection:
+                return None
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                cursor.execute(
+                    """
+                    SELECT session_id, user_id, created_at, expires_at, 
+                           status, metadata, temp_collection_name
+                    FROM sessions
+                    WHERE session_id = %s
+                    """,
+                    (session_id,)
+                )
+                
+                record = cursor.fetchone()
+                if record:
+                    return {
+                        'session_id': str(record['session_id']),
+                        'user_id': str(record['user_id']),
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'expires_at': record['expires_at'].isoformat() if record['expires_at'] else None,
+                        'status': record['status'],
+                        'metadata': record['metadata'] or {},
+                        'temp_collection_name': record['temp_collection_name']
+                    }
+                return None
+                
+        except Exception as e:
+            logging.error(f"Error getting session {session_id}: {e}")
+            return None
+    
+    def get_user_sessions(self, user_id: str, status: Optional[str] = None, 
+                         limit: int = 100, offset: int = 0) -> Dict:
+        """
+        Get sessions for a specific user.
+        
+        Args:
+            user_id: User ID to get sessions for
+            status: Optional status filter (active, expired, closed)
+            limit: Maximum number of results
+            offset: Number of results to skip
+            
+        Returns:
+            Dictionary with sessions and pagination info
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'sessions': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        sessions = []
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Build WHERE conditions
+                where_conditions = ["user_id = %s"]
+                query_params: List[Any] = [user_id]
+                
+                if status:
+                    where_conditions.append("status = %s")
+                    query_params.append(status)
+                
+                where_clause = "WHERE " + " AND ".join(where_conditions)
+                
+                # Build the query
+                query = f"""
+                    SELECT session_id, user_id, created_at, expires_at,
+                           status, metadata, temp_collection_name
+                    FROM sessions
+                    {where_clause}
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                """
+                
+                query_params.extend([limit, offset])
+                
+                # Execute query
+                cursor.execute(query, query_params)
+                records = cursor.fetchall()
+                
+                # Format results
+                for record in records:
+                    sessions.append({
+                        'session_id': str(record['session_id']),
+                        'user_id': str(record['user_id']),
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'expires_at': record['expires_at'].isoformat() if record['expires_at'] else None,
+                        'status': record['status'],
+                        'metadata': record['metadata'] or {},
+                        'temp_collection_name': record['temp_collection_name']
+                    })
+                
+                # Get total count for pagination
+                count_query = f"""
+                    SELECT COUNT(*) as total
+                    FROM sessions
+                    {where_clause}
+                """
+                
+                cursor.execute(count_query, query_params[:-2])  # Exclude LIMIT and OFFSET
+                total_count = cursor.fetchone()['total']
+                
+        except Exception as e:
+            logging.error(f"Error getting user sessions: {e}")
+            return {
+                'sessions': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': str(e)
+            }
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        return {
+            'sessions': sessions,
+            'total_found': total_count,
+            'returned_count': len(sessions),
+            'limit': limit,
+            'offset': offset,
+            'processing_time_ms': processing_time
+        }
+    
+    def update_session(self, session_id: str, status: Optional[str] = None,
+                      metadata: Optional[Dict] = None,
+                      temp_collection_name: Optional[str] = None,
+                      expires_at: Optional[datetime] = None) -> Dict:
+        """
+        Update session information.
+        
+        Args:
+            session_id: Session ID to update
+            status: New status (optional)
+            metadata: Metadata to merge (optional)
+            temp_collection_name: New temp collection name (optional)
+            expires_at: New expiration time (optional)
+            
+        Returns:
+            Dict with update results
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'session': None,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Build dynamic update query
+                update_fields = []
+                update_values = []
+                
+                if status is not None:
+                    update_fields.append('status = %s')
+                    update_values.append(status)
+                
+                if temp_collection_name is not None:
+                    update_fields.append('temp_collection_name = %s')
+                    update_values.append(temp_collection_name)
+                
+                if expires_at is not None:
+                    update_fields.append('expires_at = %s')
+                    update_values.append(expires_at)
+                
+                if metadata is not None:
+                    # Get existing metadata first
+                    cursor.execute(
+                        "SELECT metadata FROM sessions WHERE session_id = %s",
+                        (session_id,)
+                    )
+                    result = cursor.fetchone()
+                    if result:
+                        existing_metadata = result['metadata'] or {}
+                        # Merge metadata
+                        merged_metadata = {**existing_metadata, **metadata}
+                        update_fields.append('metadata = %s')
+                        update_values.append(Json(merged_metadata) if Json else json.dumps(merged_metadata))
+                
+                if not update_fields:
+                    return {
+                        'session': None,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'error': 'No fields to update'
+                    }
+                
+                # Add session_id for WHERE clause
+                update_values.append(session_id)
+                
+                # Execute update
+                update_query = f"""
+                    UPDATE sessions 
+                    SET {', '.join(update_fields)}
+                    WHERE session_id = %s
+                    RETURNING *
+                """
+                
+                cursor.execute(update_query, update_values)
+                record = cursor.fetchone()
+                
+                if record:
+                    self._connection.commit()
+                    processing_time = int((time.time() - start_time) * 1000)
+                    
+                    return {
+                        'session': {
+                            'session_id': str(record['session_id']),
+                            'user_id': str(record['user_id']),
+                            'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                            'expires_at': record['expires_at'].isoformat() if record['expires_at'] else None,
+                            'status': record['status'],
+                            'metadata': record['metadata'] or {},
+                            'temp_collection_name': record['temp_collection_name']
+                        },
+                        'processing_time_ms': processing_time
+                    }
+                else:
+                    return {
+                        'session': None,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'error': 'Session not found'
+                    }
+                
+        except Exception as e:
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'session': None,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Error updating session: {str(e)}'
+            }
+    
+    def delete_session(self, session_id: str) -> Dict:
+        """
+        Delete a session.
+        
+        Args:
+            session_id: Session ID to delete
+            
+        Returns:
+            Dict with deletion results
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'deleted': False,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Get session info before deletion
+                cursor.execute(
+                    "SELECT session_id, user_id FROM sessions WHERE session_id = %s",
+                    (session_id,)
+                )
+                record = cursor.fetchone()
+                
+                if not record:
+                    return {
+                        'deleted': False,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'error': 'Session not found'
+                    }
+                
+                # Delete the session
+                cursor.execute(
+                    "DELETE FROM sessions WHERE session_id = %s",
+                    (session_id,)
+                )
+                
+                if cursor.rowcount > 0:
+                    self._connection.commit()
+                    processing_time = int((time.time() - start_time) * 1000)
+                    
+                    return {
+                        'deleted': True,
+                        'session_id': session_id,
+                        'user_id': str(record['user_id']),
+                        'processing_time_ms': processing_time
+                    }
+                else:
+                    return {
+                        'deleted': False,
+                        'processing_time_ms': int((time.time() - start_time) * 1000),
+                        'error': 'Failed to delete session'
+                    }
+                
+        except Exception as e:
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'deleted': False,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Error deleting session: {str(e)}'
+            }
+    
+    def expire_old_sessions(self) -> Dict:
+        """
+        Mark expired sessions as 'expired' based on expires_at timestamp.
+        
+        Returns:
+            Dict with expiration results
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'expired_count': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor() as cursor:
+                # Update expired sessions
+                cursor.execute(
+                    """
+                    UPDATE sessions 
+                    SET status = 'expired'
+                    WHERE expires_at < CURRENT_TIMESTAMP 
+                    AND status = 'active'
+                    """
+                )
+                
+                expired_count = cursor.rowcount
+                self._connection.commit()
+                
+                processing_time = int((time.time() - start_time) * 1000)
+                
+                return {
+                    'expired_count': expired_count,
+                    'processing_time_ms': processing_time
+                }
+                
+        except Exception as e:
+            if self._connection:
+                self._connection.rollback()
+            return {
+                'expired_count': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': f'Error expiring sessions: {str(e)}'
+            }
+    
+    def get_session_documents(self, session_id: str, limit: int = 100, offset: int = 0) -> Dict:
+        """
+        Get all documents for a specific session by looking in metadata.
+        
+        Args:
+            session_id: Session ID to get documents for
+            limit: Maximum number of results
+            offset: Number of results to skip
+            
+        Returns:
+            Dictionary with documents and pagination info
+        """
+        import time
+        start_time = time.time()
+        
+        if not self._check_connection():
+            return {
+                'documents': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': 'Database connection failed'
+            }
+        
+        documents = []
+        
+        try:
+            if not self._connection:
+                raise Exception("No database connection")
+                
+            with self._connection.cursor(cursor_factory=RealDictCursor if RealDictCursor else None) as cursor:
+                # Search for documents where metadata contains the session_id
+                query = """
+                    SELECT document_id, user_id, filename, file_type, file_size,
+                           minio_path, processing_status, chunks_count,
+                           created_at, updated_at, metadata
+                    FROM documents
+                    WHERE metadata->>'session_id' = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                """
+                
+                cursor.execute(query, (session_id, limit, offset))
+                records = cursor.fetchall()
+                
+                # Format results
+                for record in records:
+                    documents.append({
+                        'document_id': str(record['document_id']),
+                        'user_id': str(record['user_id']),
+                        'filename': record['filename'],
+                        'file_type': record['file_type'],
+                        'file_size': record['file_size'],
+                        'chunks_count': record['chunks_count'],
+                        'processing_status': record['processing_status'],
+                        'file_url': record['minio_path'],
+                        'created_at': record['created_at'].isoformat() if record['created_at'] else None,
+                        'updated_at': record['updated_at'].isoformat() if record['updated_at'] else None,
+                        'metadata': record['metadata'] or {}
+                    })
+                
+                # Get total count for pagination
+                count_query = """
+                    SELECT COUNT(*) as total
+                    FROM documents
+                    WHERE metadata->>'session_id' = %s
+                """
+                
+                cursor.execute(count_query, (session_id,))
+                total_count = cursor.fetchone()['total']
+                
+        except Exception as e:
+            logging.error(f"Error getting session documents: {e}")
+            return {
+                'documents': [],
+                'total_found': 0,
+                'processing_time_ms': int((time.time() - start_time) * 1000),
+                'error': str(e)
+            }
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        return {
+            'documents': documents,
+            'total_found': total_count,
+            'returned_count': len(documents),
+            'limit': limit,
+            'offset': offset,
+            'processing_time_ms': processing_time
+        }
+    
+    def close(self):
+        """Close database connection"""
+        if self._connection:
+            self._connection.close()
+            self._connection = None
+    
+    def __del__(self):
+        """Cleanup on object destruction"""
+        self.close()
