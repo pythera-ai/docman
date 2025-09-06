@@ -164,6 +164,7 @@ The application uses environment variables for configuration. Key settings inclu
 #### Chunks Management
 - `POST /api/v1/chunks/session/{session_id}/chunks` - Upload chunks to session
 - `POST /api/v1/chunks/session/{session_id}/search` - Search chunks within session
+- `POST /api/v1/chunks/session/search` - Search chunks without session
 - `PUT /api/v1/chunks/session/{session_id}/chunks` - Update chunks in session
 - `DELETE /api/v1/chunks/session/{session_id}/chunks` - Delete chunks from session
 
