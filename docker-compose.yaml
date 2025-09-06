@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # docsdb-api:
+  #   build: 
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - DATABASE_URL=postgresql://user:pass@postgres:5432/docsdb
+  #     - MINIO_ENDPOINT=minio:9000
+  #     - QDRANT_HOST=qdrant
+  #     - REDIS_URL=redis://redis:6379
+  #   depends_on:
+  #     - postgres
+  #     - minio
+  #     - qdrant
+  #     - redis
+  #   volumes:
+  #     - ./logs:/app/logs
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=docman
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "1234:5432"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123
+    ports:
+      - "1235:9000"
+      - "1236:9001"
+    volumes:
+      - minio_data:/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.7.0
+    ports:
+      - "1237:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "1238:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  minio_data:
+  qdrant_data:
+  redis_data:
