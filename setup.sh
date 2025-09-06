@@ -10,7 +10,7 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-if ! command -v docker-compose &> /dev/null; then
+if ! command -v docker compose &> /dev/null; then
     echo "❌ Docker Compose is not installed. Please install Docker Compose first."
     exit 1
 fi
@@ -24,7 +24,7 @@ fi
 
 # Start services
 echo "🐳 Starting database services with Docker Compose..."
-docker-compose up -d
+docker compose up -d
 
 # Wait for services to be ready
 echo "⏳ Waiting for services to be ready..."
@@ -32,7 +32,7 @@ echo "   This may take a few minutes on first run..."
 
 # Wait for PostgreSQL
 echo "🔄 Waiting for PostgreSQL..."
-until docker-compose exec -T postgres pg_isready -U postgres; do
+until docker compose exec -T postgres pg_isready -U postgres; do
     sleep 2
 done
 echo "✅ PostgreSQL is ready!"

@@ -1,7 +1,4 @@
 # requirements.txt additions
-qdrant-client==1.7.0
-minio==7.2.0
-psycopg2-binary==2.9.9
 asyncio-pool==0.6.0
 tenacity==8.2.3
 structlog==23.2.0
@@ -17,9 +14,8 @@ python-multipart==0.0.6
 # Database & Storage
 qdrant-client==1.7.0
 minio==7.2.0
-psycopg2-binary==2.9.7
 sqlalchemy==2.0.23
-
+psycopg2-binary==2.9.9
 
 # Utility Libraries
 python-jose[cryptography]==3.3.0
