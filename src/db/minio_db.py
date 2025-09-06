@@ -1,6 +1,9 @@
 import os
 import logging
 import json
+import base64
+import unicodedata
+import re
 from datetime import datetime
 from typing import Optional, List, Any, Union, BinaryIO
 from io import BytesIO
@@ -21,6 +24,7 @@ class MinioDB(InterfaceDatabase):
     """
     Object storage database using MinIO for storing and managing document files.
     Supports all types of files including documents, images, videos, etc.
+    Enhanced with Unicode filename support and better error handling.
     """
     
     def __init__(
@@ -33,6 +37,68 @@ class MinioDB(InterfaceDatabase):
         if not MINIO_AVAILABLE:
             raise ImportError("MinIO package is not installed. Please install it with: pip install minio")
         self._client = self.connect_client(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
+    
+    @staticmethod
+    def _sanitize_filename_for_metadata(filename: str) -> str:
+        """
+        Sanitize filename to be ASCII-compatible for MinIO metadata.
+        MinIO metadata only supports US-ASCII characters.
+        """
+        try:
+            # First try to encode as ASCII
+            filename.encode('ascii')
+            return filename
+        except UnicodeEncodeError:
+            # If contains non-ASCII characters, use base64 encoding
+            encoded_bytes = filename.encode('utf-8')
+            base64_encoded = base64.b64encode(encoded_bytes).decode('ascii')
+            return f"b64:{base64_encoded}"
+    
+    @staticmethod
+    def _decode_filename_from_metadata(metadata_filename: str) -> str:
+        """
+        Decode filename from metadata back to original Unicode string.
+        """
+        if metadata_filename.startswith('b64:'):
+            try:
+                base64_part = metadata_filename[4:]  # Remove 'b64:' prefix
+                decoded_bytes = base64.b64decode(base64_part)
+                return decoded_bytes.decode('utf-8')
+            except Exception:
+                return metadata_filename  # Return as-is if decoding fails
+        return metadata_filename
+    
+    @staticmethod
+    def _normalize_filename(filename: str) -> str:
+        """
+        Normalize filename for consistent storage while preserving Unicode.
+        """
+        # Normalize Unicode characters
+        normalized = unicodedata.normalize('NFC', filename)
+        
+        # Remove any control characters
+        cleaned = re.sub(r'[\x00-\x1f\x7f]', '', normalized)
+        
+        # Ensure it's not empty
+        if not cleaned.strip():
+            return 'unnamed_file'
+        
+        return cleaned.strip()
+    
+    @staticmethod
+    def _create_safe_metadata(metadata_dict: dict) -> dict:
+        """
+        Create metadata dictionary with ASCII-safe values for MinIO.
+        """
+        safe_metadata = {}
+        for key, value in metadata_dict.items():
+            if isinstance(value, str):
+                # Sanitize string values to be ASCII-compatible
+                safe_metadata[key] = MinioDB._sanitize_filename_for_metadata(value)
+            else:
+                # Convert non-string values to string
+                safe_metadata[key] = str(value)
+        return safe_metadata
         
     def connect_client(self, url, **kwargs) -> Any:
         """Connect to MinIO client"""
@@ -138,13 +204,23 @@ class MinioDB(InterfaceDatabase):
                     })
                     continue
                 
-                # Validate file extension
-                allowed_extensions = ['pdf', 'docx', 'txt', 'md', 'rtf']
-                file_extension = filename.lower().split('.')[-1] if '.' in filename else ''
-                if file_extension not in allowed_extensions:
+                # Normalize and validate filename
+                try:
+                    normalized_filename = self._normalize_filename(filename)
+                except Exception as e:
                     failed_uploads.append({
                         'filename': filename,
-                        'error': f'File type not allowed. Allowed types: {allowed_extensions}'
+                        'error': f'Invalid filename format: {str(e)}'
+                    })
+                    continue
+                
+                # Validate file extension
+                allowed_extensions = ['pdf', 'docx', 'txt', 'md', 'rtf', 'doc']
+                file_extension = normalized_filename.lower().split('.')[-1] if '.' in normalized_filename else ''
+                if file_extension not in allowed_extensions:
+                    failed_uploads.append({
+                        'filename': normalized_filename,
+                        'error': f'File type "{file_extension}" not allowed. Allowed types: {allowed_extensions}'
                     })
                     continue
                 
@@ -152,7 +228,7 @@ class MinioDB(InterfaceDatabase):
                 max_size = 50 * 1024 * 1024  # 50MB
                 if file_size > max_size:
                     failed_uploads.append({
-                        'filename': filename,
+                        'filename': normalized_filename,
                         'error': f'File size {file_size} exceeds maximum limit of {max_size} bytes'
                     })
                     continue
@@ -168,23 +244,35 @@ class MinioDB(InterfaceDatabase):
                 # Use document_id as object_name (hash string)
                 object_name = document_id
                 
-                # Prepare minimal metadata for MinIO
-                upload_metadata = {
-                    'original_filename': filename,
+                # Prepare metadata with Unicode support
+                raw_metadata = {
+                    'original_filename': normalized_filename,
                     'file_hash': file_hash or '',
                     'upload_time': datetime.utcnow().isoformat(),
-                    'file_size': str(actual_size)
+                    'file_size': str(actual_size),
+                    'content_type': content_type
                 }
                 
-                # Upload file to MinIO
-                self._client.put_object(
-                    bucket_name=bucket_name,
-                    object_name=object_name,
-                    data=file_stream,
-                    length=actual_size if actual_size > 0 else -1,
-                    content_type=content_type,
-                    metadata=upload_metadata
-                )
+                # Create ASCII-safe metadata for MinIO
+                upload_metadata = self._create_safe_metadata(raw_metadata)
+                
+                # Upload file to MinIO with error handling
+                try:
+                    self._client.put_object(
+                        bucket_name=bucket_name,
+                        object_name=object_name,
+                        data=file_stream,
+                        length=actual_size if actual_size > 0 else -1,
+                        content_type=content_type,
+                        metadata=upload_metadata
+                    )
+                except Exception as upload_error:
+                    logging.error(f"MinIO upload error for {normalized_filename}: {upload_error}")
+                    failed_uploads.append({
+                        'filename': normalized_filename,
+                        'error': f'Upload to MinIO failed: {str(upload_error)}'
+                    })
+                    continue
                 
                 # Generate file URL
                 file_url = f"{base_url}/{bucket_name}/{object_name}"
@@ -192,11 +280,13 @@ class MinioDB(InterfaceDatabase):
                 # Add to successful documents
                 documents.append({
                     'document_id': document_id,
-                    'filename': filename,
+                    'filename': normalized_filename,  # Return the normalized filename
                     'file_size': actual_size,
                     'chunks_count': 0,  # Will be updated by processing service
                     'processing_status': 'uploaded',
-                    'file_url': file_url
+                    'file_url': file_url,
+                    'created_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat()
                 })
                 
             except Exception as e:
@@ -444,7 +534,9 @@ class MinioDB(InterfaceDatabase):
                     metadata = stat.metadata or {}
                     
                     # Apply filename pattern filter if specified
-                    original_filename = metadata.get('x-amz-meta-original_filename', 'unknown')
+                    encoded_filename = metadata.get('x-amz-meta-original_filename', 'unknown')
+                    original_filename = self._decode_filename_from_metadata(encoded_filename)
+                    
                     if filename_pattern and filename_pattern.lower() not in original_filename.lower():
                         # No match found
                         pass
@@ -471,7 +563,8 @@ class MinioDB(InterfaceDatabase):
                             })
                         
                         documents.append(document_info)
-                except:
+                except Exception as e:
+                    logging.warning(f"Could not get document {document_id}: {e}")
                     pass  # Document not found
             else:
                 # List all objects in bucket
@@ -494,8 +587,11 @@ class MinioDB(InterfaceDatabase):
                         try:
                             stat = self._client.stat_object(bucket_name, obj.object_name)
                             metadata = stat.metadata or {}
-                            original_filename = metadata.get('x-amz-meta-original_filename', 'unknown')
-                        except:
+                            # Decode filename from metadata safely
+                            encoded_filename = metadata.get('x-amz-meta-original_filename', 'unknown')
+                            original_filename = self._decode_filename_from_metadata(encoded_filename)
+                        except Exception as e:
+                            logging.warning(f"Could not get metadata for {obj.object_name}: {e}")
                             pass
                     
                     # Apply filename pattern filter
@@ -577,12 +673,16 @@ class MinioDB(InterfaceDatabase):
             stat = self._client.stat_object(bucket_name, document_id)
             metadata = stat.metadata or {}
             
+            # Decode filename from metadata
+            encoded_filename = metadata.get('original_filename', 'unknown')
+            decoded_filename = self._decode_filename_from_metadata(encoded_filename)
+            
             base_url = 'https://minio/bucket'  # Should be configurable
             file_url = f"{base_url}/{bucket_name}/{document_id}"
             
             return {
                 'document_id': document_id,
-                'filename': metadata.get('original_filename', 'unknown'),
+                'filename': decoded_filename,
                 'file_size': stat.size,
                 'chunks_count': 0,  # Will be set by processing service
                 'processing_status': 'stored',
@@ -664,3 +764,81 @@ class MinioDB(InterfaceDatabase):
                 'status': 'failed',
                 'message': f'Error deleting bucket {bucket_name}: {str(e)}'
             }
+    
+    def validate_filename_support(self, test_filename: str) -> dict:
+        """
+        Test if a filename can be properly handled by the system.
+        Useful for debugging Unicode filename issues.
+        
+        Args:
+            test_filename: Filename to test
+            
+        Returns:
+            Dictionary with validation results
+        """
+        result = {
+            'original_filename': test_filename,
+            'is_ascii': False,
+            'normalized_filename': '',
+            'metadata_safe': False,
+            'can_decode': False,
+            'errors': []
+        }
+        
+        try:
+            # Test ASCII compatibility
+            test_filename.encode('ascii')
+            result['is_ascii'] = True
+        except UnicodeEncodeError:
+            result['is_ascii'] = False
+        
+        try:
+            # Test normalization
+            normalized = self._normalize_filename(test_filename)
+            result['normalized_filename'] = normalized
+        except Exception as e:
+            result['errors'].append(f"Normalization failed: {str(e)}")
+        
+        try:
+            # Test metadata safety
+            safe_metadata = self._create_safe_metadata({'test_filename': test_filename})
+            result['metadata_safe'] = True
+            
+            # Test decoding
+            encoded_value = safe_metadata['test_filename']
+            decoded_value = self._decode_filename_from_metadata(encoded_value)
+            result['can_decode'] = (decoded_value == test_filename)
+            
+            if not result['can_decode']:
+                result['errors'].append(f"Decode mismatch: '{decoded_value}' != '{test_filename}'")
+                
+        except Exception as e:
+            result['errors'].append(f"Metadata processing failed: {str(e)}")
+        
+        return result
+    
+    def get_system_info(self) -> dict:
+        """
+        Get system information and health status.
+        
+        Returns:
+            Dictionary with system information
+        """
+        info = {
+            'minio_available': MINIO_AVAILABLE,
+            'client_connected': self._check_client(),
+            'unicode_support': True,
+            'supported_extensions': ['pdf', 'docx', 'txt', 'md', 'rtf', 'doc'],
+            'max_file_size_mb': 50,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        if self._check_client():
+            try:
+                # Test basic operations
+                buckets = self._client.list_buckets()
+                info['available_buckets'] = [bucket.name for bucket in buckets]
+            except Exception as e:
+                info['connection_error'] = str(e)
+        
+        return info
