@@ -58,13 +58,23 @@ async def upload_document(
         
         # Generate file hash
         file_hash = hashlib.md5(file_content).hexdigest()
-        
+
+        # content type
+        if file.filename.endswith(".docx"):
+            content_type = "docx"
+        elif file.filename.endswith(".pdf"):
+            content_type = "pdf"
+        elif file.filename.endswith(".txt"):
+            content_type = "txt"
+        else:
+            content_type = "unknown"
+
         # Create document metadata using the correct model structure
         doc_metadata = DocumentMetadata(
             document_id=document_id,
             filename=file.filename or f"document_{document_id}",
             file_size=len(file_content),
-            content_type=file.content_type or "application/octet-stream",
+            content_type=content_type,
             file_hash=file_hash,
             chunks_count=0,
             processing_status="uploaded",
@@ -87,7 +97,12 @@ async def upload_document(
             metadata=doc_metadata.metadata
         )
         
-        # Return document information
+        #! check for errors in result
+        if result.get("error"):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to upload document: {result['error']}"
+            )
         return Document(
             document_id=document_id,
             filename=doc_metadata.filename,
