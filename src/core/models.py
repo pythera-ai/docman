@@ -182,6 +182,7 @@ class ChunkInsertResponse(BaseModel):
 class ChunkUploadRequest(BaseModel):
     """Request model for uploading chunks"""
     chunks: List[ChunkMetadata] = Field(..., description="List of chunks to upload")
+    collection_name: Optional[str] = Field(None, description="Optional collection name for Qdrant storage")
 
 
 class ChunkUploadResponse(BaseModel):
@@ -200,9 +201,16 @@ class ChunkUpdateRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(None, description="Updated metadata")
 
 
+class ChunkBatchUpdateRequest(BaseModel):
+    """Request model for batch updating chunks"""
+    updates: List[ChunkUpdateRequest] = Field(..., description="List of chunk updates")
+    collection_name: Optional[str] = Field(None, description="Optional collection name for Qdrant storage")
+
+
 class ChunkDeleteRequest(BaseModel):
     """Request model for deleting chunks"""
     chunk_ids: List[str] = Field(..., description="List of chunk IDs to delete")
+    collection_name: Optional[str] = Field(None, description="Optional collection name for Qdrant storage")
 
 
 class ChunkOperationResponse(BaseModel):
@@ -222,6 +230,7 @@ class SearchRequest(BaseModel):
     query_vector: List[float] = Field(..., description="Query embedding vector")
     limit: Optional[int] = Field(5, ge=1, le=100, description="Number of results to return")
     filters: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional search filters")
+    collection_name: Optional[str] = Field(None, description="Optional collection name for Qdrant search")
 
 
 class SearchResult(BaseModel):

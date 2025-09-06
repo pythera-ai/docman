@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from src.core.config import config
 from src.core.models import (
     ChunkUpdateRequest, ChunkDeleteRequest, ChunkUploadRequest, ChunkUploadResponse,
-    ChunkOperationResponse, SearchRequest, SearchResponse, SearchResult
+    ChunkOperationResponse, SearchRequest, SearchResponse, SearchResult, ChunkBatchUpdateRequest
 )
 from src.api.services.database_manager import DatabaseManager
 from src.core.exceptions import DatabaseConnectionException
@@ -64,8 +64,11 @@ async def upload_chunks(
             }
             chunks_data.append(chunk_data)
         
-        # Store chunks using database manager
-        result = await db_manager.create_chunks(chunks=chunks_data)
+        # Store chunks using database manager with optional collection name
+        result = await db_manager.create_chunks(
+            chunks=chunks_data,
+            collection_name=request.collection_name
+        )
         
         processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
         
@@ -96,8 +99,76 @@ async def upload_chunks(
         )
 
 
-@router.post("/session/{session_id}/search", response_model=SearchResponse)
+@router.post("/session/search", response_model=SearchResponse)
 async def search_chunks(
+    request: SearchRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> SearchResponse:
+    """
+    Search chunks using vector similarity.
+    
+    Args:
+        session_id: Session identifier
+        request: Search request with query vector and filters
+        db_manager: Database manager instance
+        
+    Returns:
+        SearchResponse: Search results with chunks
+        
+    Raises:
+        HTTPException: If search fails
+    """
+    try:
+        start_time = datetime.utcnow()
+        
+        # Perform search using database manager with optional collection name
+        result = await db_manager.get_chunks(
+            query_vector=request.query_vector,
+            filters=request.filters or {},
+            limit=request.limit or 5,
+            collection_name=request.collection_name
+        )
+        
+        processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+        
+        # Format results according to your specified structure
+        search_results = []
+        for chunk in result.get("chunks", []):
+            payload = chunk.get("payload", {})
+            search_results.append(SearchResult(
+                chunk_id=payload.get("chunk_id", str(chunk.get("id", ""))),
+                document_id=payload.get("document_id", ""),
+                document_title=payload.get("doc_title", ""),
+                chunk_text=payload.get("chunk_content", ""),
+                similarity_score=chunk.get("score", 0.0),
+                source="main",  # Determine source based on session
+                metadata={
+                    "page_number": payload.get("page", 0),
+                    "section": payload.get("section", ""),
+                    **{k: v for k, v in payload.items() if k not in ["document_id", "doc_title", "chunk_content", "page", "section"]}
+                }
+            ))
+        
+        return SearchResponse(
+            query_vector=request.query_vector,
+            results=search_results,
+            total_results=result.get("total_found", len(search_results)),
+            search_time_ms=processing_time
+        )
+        
+    except DatabaseConnectionException as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database connection error: {e.message}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Search failed: {str(e)}"
+        )
+
+@router.post("/session/{session_id}/search", response_model=SearchResponse)
+async def search_chunks_w_session(
     session_id: str,
     request: SearchRequest,
     db_manager: DatabaseManager = Depends(get_database_manager)
@@ -119,19 +190,18 @@ async def search_chunks(
     try:
         start_time = datetime.utcnow()
         
-        # Prepare search parameters
+        # Currently not used Prepare search parameters
         search_params = {
-            "query_vector": request.query_vector,
-            "limit": request.limit,
             "session_id": session_id,
             **(request.filters or {})
         }
         
-        # Perform search using database manager
+        # Perform search using database manager with optional collection name
         result = await db_manager.get_chunks(
             query_vector=request.query_vector,
             filters=search_params,
-            limit=request.limit or 5
+            limit=request.limit or 5,
+            collection_name=request.collection_name
         )
         
         processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
@@ -176,7 +246,7 @@ async def search_chunks(
 @router.put("/session/{session_id}/chunks", response_model=ChunkOperationResponse)
 async def update_chunks(
     session_id: str,
-    updates: List[ChunkUpdateRequest],
+    request: ChunkBatchUpdateRequest,
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> ChunkOperationResponse:
     """
@@ -184,7 +254,7 @@ async def update_chunks(
     
     Args:
         session_id: Session identifier
-        updates: List of chunk update requests
+        request: Batch chunk update request with optional collection name
         db_manager: Database manager instance
         
     Returns:
@@ -198,7 +268,7 @@ async def update_chunks(
         
         # Prepare update data
         update_points = []
-        for update in updates:
+        for update in request.updates:
             point_data: Dict[str, Any] = {
                 "id": update.chunk_id
             }
@@ -223,9 +293,10 @@ async def update_chunks(
             
             update_points.append(point_data)
         
-        # Perform update using database manager
+        # Perform update using database manager with optional collection name
         result = await db_manager.update_chunks(
-            chunks=update_points
+            chunks=update_points,
+            collection_name=request.collection_name
         )
         
         processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
@@ -272,9 +343,10 @@ async def delete_chunks(
     try:
         start_time = datetime.utcnow()
         
-        # Perform deletion using database manager
+        # Perform deletion using database manager with optional collection name
         result = await db_manager.delete_chunks(
-            chunk_ids=request.chunk_ids
+            chunk_ids=request.chunk_ids,
+            collection_name=request.collection_name
         )
         
         processing_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
